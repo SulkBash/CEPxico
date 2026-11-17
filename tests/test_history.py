@@ -175,3 +175,17 @@ def test_cli_records_history_and_exports_it(tmp_path, monkeypatch):
     rows = list(csv.DictReader(all_csv.open(encoding="utf-8-sig")))
     assert [(r["File"], r["Result"]) for r in rows] == [("pedro.pdf", "Review"), ("juan.pdf", "Success")]
     assert [r["File"] for r in csv.DictReader(run_csv.open(encoding="utf-8-sig"))] == ["juan.pdf"]
+
+
+def test_forgetting_a_check_frees_its_transfer(tmp_path, history):
+    process_file(receipt(tmp_path, "juan.pdf"), FakeClient(FOUND), history=history)
+    flagged = process_file(receipt(tmp_path, "pedro.pdf", b"%PDF two"), FakeClient(FOUND), history=history)
+    assert flagged.outcome is Outcome.REVIEW
+
+    juan = next(c for c in history.checks() if c.file_name == "juan.pdf")
+    assert juan.id > 0
+    history.forget(juan)
+
+    assert [c.file_name for c in history.checks()] == ["pedro.pdf"]
+    again = process_file(receipt(tmp_path, "pedro.pdf", b"%PDF two"), FakeClient(FOUND), history=history)
+    assert again.outcome is Outcome.SUCCESS

@@ -50,7 +50,7 @@ needed for end users: see [Build the app](#build-the-app).
 cepxico                               # desktop app (drag & drop, Ctrl+V / Cmd+V to paste screenshots)
 cepxico receipt1.pdf receipt2.png     # command line; exit code 0 only if every CEP was found
 cepxico *.pdf --out D:\CEPs -v        # custom output folder, debug logging
-cepxico D:\Receipts                   # every PDF/PNG/JPG in a folder
+cepxico D:\Receipts                   # every PDF/PNG/JPG/WEBP in a folder
 cepxico *.pdf --jobs 2                # receipts checked at once (default 4, max 8)
 cepxico *.pdf --csv results.csv       # also write this run's results to a CSV file
 cepxico --export-history all.csv      # every check ever made, as CSV
@@ -76,13 +76,14 @@ Files copied in the file manager can be pasted too, like dropped files.
 The **Settings** button, saved in `settings.json` in the app's data folder and also
 used by the command line:
 
-| System | Data folder (settings and history) |
+| System | Data folder (settings, history, log) |
 |---|---|
 | Windows | `%APPDATA%\CEPxico` |
 | macOS | `~/Library/Application Support/CEPxico` |
 | Linux | `~/.config/cepxico` (or `$XDG_CONFIG_HOME/cepxico`) |
 
-`CEPXICO_HOME` overrides the folder, for example for a portable install.
+`CEPXICO_HOME` overrides the folder, for example for a portable install. Settings shows
+the folder, with a button to open it.
 
 - **Save each CEP as:** PDF (default), XML, or the PDF and XML in one ZIP. The XML
   is Banxico's digitally signed record of the transfer: it can be checked with
@@ -133,7 +134,10 @@ Every check is kept in `history.sqlite3` in the data folder: when, which file, t
 result and its message, the transfer's data, sender and beneficiary names from the CEP,
 and where the CEP was saved. The **History** button lists it, newest first, with a
 search box (file, clave de rastreo, amount, name, bank) and **Export CSV...** for what's
-shown. **Open CEP** (or double-click) opens a row's saved CEP.
+shown. **Open CEP** (or double-click) opens a row's saved CEP. **Forget** deletes a
+check, for example when a receipt was wrongly taken as [used twice](#receipts-used-twice)
+(a moved folder): once the first check is forgotten, its transfer no longer counts as
+used.
 
 The CSV is UTF-8 with a byte order mark, so Excel shows accents correctly, and accounts
 and claves are written as text (`="012180001234567893"`), so Excel keeps every digit.
@@ -286,7 +290,14 @@ Tests run offline. `tests/data/` holds snapshots of Banxico's public bank catalo
 for 2019, 2024 and 2026, to test name changes over time. GitHub Actions runs them on
 Windows, macOS and Linux (`.github/workflows/tests.yml`).
 Never commit real receipts or CEPs: they contain account numbers. `.gitignore`
-excludes PDFs and images for this reason.
+excludes PDFs and images for this reason. Values copied into tests (claves, accounts,
+amounts) must be made up too.
+
+### Bug reports
+
+Attach `cepxico.log` from the data folder (Settings → Data folder → Open). Account
+numbers, cards, phones and claves de rastreo are cut to their last 4 characters in it,
+but file names and amounts aren't, so look it over before posting it publicly.
 
 Every message users read goes through `tr("English text")`; add its Spanish to
 `src/cepxico/translations.py`. `tests/test_i18n.py` fails on a message without a
@@ -303,4 +314,7 @@ translation, a translation whose `{placeholders}` differ, or a leftover translat
   tried by hand there yet: look over the window, fonts, drag & drop and paste on each.
 - A copy of a receipt under another name counts as another receipt (by design, see
   [receipts used twice](#receipts-used-twice)). Moving a folder of already-checked
-  receipts and checking them again therefore marks them Review.
+  receipts and checking them again therefore marks them Review; **Forget** in History
+  clears the old checks.
+- Text looks slightly soft on Windows with display scaling above 100%: the app doesn't
+  declare itself DPI-aware, so Windows stretches it.

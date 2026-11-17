@@ -7,6 +7,8 @@ import contextlib
 import glob
 import io
 import logging
+import logging.handlers
+import re
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -15,7 +17,7 @@ from pathlib import Path
 
 from cepxico import __version__
 from cepxico.banxico import BanxicoError, CEPFiles
-from cepxico.config import DEFAULT_CEP_DIR, open_path
+from cepxico.config import DEFAULT_CEP_DIR, app_data_dir, open_path
 from cepxico.extraction import SUPPORTED_EXTENSIONS
 from cepxico.history import History, history_path, write_csv
 from cepxico.i18n import set_language, tr
@@ -194,12 +196,50 @@ def interactive_ask_code() -> AskCode | None:
     return terminal_ask_code if sys.stdin.isatty() and sys.stdout.isatty() else None
 
 
+LOG_FILE = "cepxico.log"
+LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+
+# Accounts, cards and phones (10+ digits), and claves de rastreo (16-30 letters and
+# digits, with at least one of each, or 16+ digits).
+_LONG_NUMBER = re.compile(r"\d{10,}")
+_CLAVE = re.compile(r"\b(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{16,30}\b")
+
+
+def mask(text: str) -> str:
+    """`text` with account numbers and claves de rastreo cut to their last 4 characters,
+    so a log can be attached to a public bug report."""
+    text = _CLAVE.sub(lambda m: "…" + m.group()[-4:], text)
+    return _LONG_NUMBER.sub(lambda m: "…" + m.group()[-4:], text)
+
+
+class MaskingFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return mask(super().format(record))
+
+
+def log_file_handler(path: Path) -> logging.Handler:
+    """The log file: about 1 MB, plus two older ones, with accounts and claves masked."""
+    handler = logging.handlers.RotatingFileHandler(path, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+    handler.setFormatter(MaskingFormatter(LOG_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
+    return handler
+
+
 def configure_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    """Logs to the console and to cepxico.log in the data folder. The desktop app has
+    no console, so the file is what a bug report can include."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format=LOG_FORMAT, datefmt="%H:%M:%S")
+    root = logging.getLogger()
+    if not any(getattr(h, "cepxico_log", False) for h in root.handlers):
+        try:
+            app_data_dir().mkdir(parents=True, exist_ok=True)
+            handler = log_file_handler(app_data_dir() / LOG_FILE)
+        except OSError as e:  # a read-only data folder mustn't stop the app
+            logging.getLogger(__name__).warning("No log file: %s", e)
+        else:
+            handler.cepxico_log = True  # type: ignore[attr-defined]
+            handler.setLevel(level)
+            root.addHandler(handler)
     # Third-party libraries are chatty at INFO/DEBUG.
     for noisy in ("pdfminer", "urllib3", "PIL"):
         logging.getLogger(noisy).setLevel(logging.WARNING)

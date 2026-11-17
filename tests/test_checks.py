@@ -272,3 +272,26 @@ def test_cli_uses_saved_settings_and_save_option(tmp_path, monkeypatch):
 
 def test_payment_data_default_is_ordinary_transfer():
     assert PaymentData("r.pdf").pago_a_banco is False
+
+
+def test_log_masks_accounts_and_claves(tmp_path):
+    import logging
+
+    from cepxico.cli import log_file_handler, mask
+
+    assert mask("key=MBAN01002611050012345678 account=012180001234567893 amount=1500.00") == (
+        "key=…5678 account=…7893 amount=1500.00"
+    )
+    assert mask("085901234567890123 5512345678 file=recibo_2026.pdf") == "…0123 …5678 file=recibo_2026.pdf"
+
+    path = tmp_path / "cepxico.log"
+    handler = log_file_handler(path)
+    logger = logging.getLogger("cepxico.test_log")
+    logger.addHandler(handler)
+    try:
+        logger.warning("r.pdf: key=%s account=%s", "MBAN01002611050012345678", "012180001234567893")
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+    text = path.read_text(encoding="utf-8")
+    assert "key=…5678 account=…7893" in text and "012180001234567893" not in text

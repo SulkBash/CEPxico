@@ -115,6 +115,7 @@ class HistoryDialog(tk.Toplevel):
         self.tree.bind("<Double-1>", lambda _e: self.open_cep())
 
         theme.make_button(buttons, tr("Open CEP"), self.open_cep).pack(side=tk.LEFT)
+        theme.make_button(buttons, tr("Forget"), self.forget, variant="danger").pack(side=tk.LEFT, padx=6)
         theme.make_button(buttons, tr("Close"), self.destroy).pack(side=tk.RIGHT)
         theme.make_button(buttons, tr("Export CSV..."), self.export, variant="primary").pack(
             side=tk.RIGHT, padx=6
@@ -175,6 +176,33 @@ class HistoryDialog(tk.Toplevel):
             )
         else:
             self._on_open(Path(check.cep_file))
+
+    def forget(self) -> None:
+        check = self.selected()
+        if not check:
+            messagebox.showinfo(tr("Forget"), tr("Select a row first."), parent=self)
+            return
+        sure = messagebox.askyesno(
+            tr("Forget"),
+            tr(
+                "Forget the check of {file} on {date}? If Banxico confirmed it, its transfer no "
+                "longer counts as used, so another receipt for it can pass.",
+                file=check.file_name,
+                date=check.checked_at_text,
+            ),
+            parent=self,
+        )
+        if not sure:
+            return
+        try:
+            self._history.forget(check)
+        except Exception as e:  # a locked or damaged history file
+            logger.exception("Couldn't forget a check")
+            messagebox.showerror(
+                tr("Forget"), tr("Couldn't change the history: {error}", error=e), parent=self
+            )
+            return
+        self.reload()
 
     def export(self) -> None:
         path = filedialog.asksaveasfilename(

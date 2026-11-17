@@ -66,6 +66,7 @@ class Check:
     beneficiary_name: str = ""  # from the CEP
     cep_file: str = ""
     edited: bool = False  # checked with fields the user typed in
+    id: int = 0  # row in the history; 0 until it's stored
 
     @property
     def checked_at_text(self) -> str:
@@ -76,7 +77,7 @@ class Check:
             return self.checked_at
 
 
-_COLUMNS = [f.name for f in fields(Check)]
+_COLUMNS = [f.name for f in fields(Check) if f.name != "id"]
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS checks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,7 +132,7 @@ class History:
             yield
 
     def add(self, check: Check) -> None:
-        values = [int(v) if isinstance(v, bool) else v for v in astuple(check)]
+        values = [int(v) if isinstance(v, bool) else v for v in astuple(check)[: len(_COLUMNS)]]
         with self._connect() as db:
             db.execute(
                 f"INSERT INTO checks ({', '.join(_COLUMNS)}) VALUES ({', '.join('?' * len(_COLUMNS))})",
@@ -142,7 +143,7 @@ class History:
         """The first time Banxico confirmed this transfer for a different receipt file."""
         with self._connect() as db:
             row = db.execute(
-                f"SELECT {', '.join(_COLUMNS)} FROM checks "
+                f"SELECT {', '.join(_COLUMNS)}, id FROM checks "
                 "WHERE tracking_key = ? AND payment_date = ? AND sender_code = ? AND outcome = 'success' "
                 "AND NOT (file_path = ? AND file_hash = ?) ORDER BY id LIMIT 1",
                 (key.tracking_key, key.payment_date, key.sender_code, file_path, file_hash),
@@ -151,14 +152,20 @@ class History:
 
     def checks(self, limit: int | None = None) -> list[Check]:
         """Checks, newest first."""
-        query = f"SELECT {', '.join(_COLUMNS)} FROM checks ORDER BY id DESC"
+        query = f"SELECT {', '.join(_COLUMNS)}, id FROM checks ORDER BY id DESC"
         with self._connect() as db:
             rows = db.execute(query + (" LIMIT ?" if limit else ""), (limit,) if limit else ()).fetchall()
         return [_check(row) for row in rows]
 
+    def forget(self, check: Check) -> None:
+        """Deletes a check, for example a receipt wrongly taken as used twice: once
+        forgotten, a confirmation no longer counts as a use of its transfer."""
+        with self._connect() as db:
+            db.execute("DELETE FROM checks WHERE id = ?", (check.id,))
+
 
 def _check(row: Sequence[object]) -> Check:
-    values = dict(zip(_COLUMNS, row, strict=True))
+    values = dict(zip([*_COLUMNS, "id"], row, strict=True))
     values["edited"] = bool(values["edited"])
     return Check(**values)  # type: ignore[arg-type]
 

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # those lines into one. A process-wide setting, used only by text extraction here.
 pymupdf.TOOLS.set_small_glyph_heights(True)
 
-IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg"})
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})  # WEBP: web downloads, some chat apps
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | {".pdf"}
 
 # PDFs with less embedded text than this are treated as scans and OCR'd.

@@ -427,4 +427,18 @@ ES: dict[str, str] = {
     "Banxico didn't accept the last code. Try this new image (attempt {attempt} of {max}).": (
         "Banxico no aceptó el último código. Prueba con esta imagen nueva (intento {attempt} de {max})."
     ),
+    # --- Data folder, log, forgetting checks ---------------------------------------------
+    "Data folder": "Carpeta de datos",
+    "Settings, history and the log file (cepxico.log, to attach to bug reports).": (
+        "Configuración, historial y el archivo de registro "
+        "(cepxico.log, para adjuntar a reportes de errores)."
+    ),
+    "Open": "Abrir",
+    "Forget": "Olvidar",
+    "Forget the check of {file} on {date}? If Banxico confirmed it, its transfer no longer counts as "
+    "used, so another receipt for it can pass.": (
+        "¿Olvidar la verificación de {file} del {date}? Si Banxico la confirmó, su transferencia deja de "
+        "contar como usada, así que otro comprobante de ella podrá pasar."
+    ),
+    "Couldn't change the history: {error}": "No se pudo modificar el historial: {error}",
 }

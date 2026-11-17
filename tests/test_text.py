@@ -324,3 +324,15 @@ def test_rapidocr_reads_a_sideways_phone_photo(tmp_path, monkeypatch):
         sideways.save(tmp_path / "r.jpg", "JPEG", exif=exif, quality=95)
 
     assert_receipt_fields(parse_payment(extract_text(tmp_path / "r.jpg")))
+
+
+def test_rapidocr_reads_a_webp_receipt(tmp_path, monkeypatch):
+    pytest.importorskip("rapidocr")
+    from PIL import Image
+
+    monkeypatch.delenv(text.OCR_ENGINE_ENV, raising=False)
+    get_ocr_engine.cache_clear()
+    with Image.open(io.BytesIO(render_receipt(RECEIPT_FIELDS))) as image:
+        image.save(tmp_path / "r.webp", "WEBP", quality=90)
+
+    assert_receipt_fields(parse_payment(extract_text(tmp_path / "r.webp")))

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from tkinter import ttk
 
 from cepxico.banxico import CEPFiles
+from cepxico.config import app_data_dir, open_path
 from cepxico.gui import theme
 from cepxico.i18n import LANGUAGES, tr
 from cepxico.settings import Settings, parse_accounts
@@ -90,6 +91,15 @@ class SettingsDialog(tk.Toplevel):
                 languages, text=text, value=value, variable=self.language, style="Card.TRadiobutton"
             ).pack(side=tk.LEFT, padx=(0, 12))
 
+        ttk.Label(body, text=tr("Data folder"), style="CardTitle.TLabel").pack(anchor=tk.W, pady=(14, 0))
+        self._hint(body, tr("Settings, history and the log file (cepxico.log, to attach to bug reports)."))
+        folder = tk.Frame(body, bg=theme.CARD_BG)
+        folder.pack(fill=tk.X, padx=(22, 0), pady=(4, 0))
+        tk.Label(
+            folder, text=str(app_data_dir()), bg=theme.CARD_BG, fg=theme.TEXT, font=theme.mono(9), anchor=tk.W
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        theme.make_button(folder, tr("Open"), self.open_data_folder).pack(side=tk.RIGHT)
+
         self.problem = tk.Label(
             body, bg=theme.CARD_BG, fg=ERROR_COLOR, font=theme.font(8), justify=tk.LEFT, wraplength=420
         )
@@ -115,6 +125,13 @@ class SettingsDialog(tk.Toplevel):
             justify=tk.LEFT,
             wraplength=420,
         ).pack(anchor=tk.W, padx=(22, 0))
+
+    def open_data_folder(self) -> None:
+        try:
+            app_data_dir().mkdir(parents=True, exist_ok=True)
+            open_path(app_data_dir())
+        except OSError as e:
+            self.problem.configure(text=tr("Couldn't open {path}: {error}", path=app_data_dir(), error=e))
 
     def _update_enabled(self) -> None:
         self.accounts.configure(state=tk.NORMAL if self.check_accounts.get() else tk.DISABLED)

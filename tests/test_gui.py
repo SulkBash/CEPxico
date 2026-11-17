@@ -354,3 +354,31 @@ def test_dialog_sends_spid_when_ticked(app):
     dialog.spid.set(False)
     dialog.save(check_now=False)
     assert calls == [{"spid": "0"}]
+
+
+def test_history_window_forgets_a_check(app, tmp_path, monkeypatch):
+    from cepxico.gui import history_dialog
+    from cepxico.history import Check, History
+
+    history = History(tmp_path / "h.sqlite3")
+    history.add(Check("2026-11-17T10:00:00-06:00", "juan.pdf", "C:/juan.pdf", "", "success", ""))
+    dialog = history_dialog.HistoryDialog(app, history=history, on_open=lambda _p: None)
+    dialog.tree.selection_set("0")
+    monkeypatch.setattr(history_dialog.messagebox, "askyesno", lambda *a, **k: True)
+
+    dialog.forget()
+
+    assert history.checks() == [] and dialog.shown == []
+    dialog.destroy()
+
+
+def test_settings_show_the_data_folder(app, monkeypatch):
+    from cepxico.config import app_data_dir
+    from cepxico.gui import settings_dialog
+
+    opened = []
+    monkeypatch.setattr(settings_dialog, "open_path", opened.append)
+    dialog = settings_dialog.SettingsDialog(app, settings=Settings(), on_save=lambda s: None)
+    dialog.open_data_folder()
+    assert opened == [app_data_dir()]
+    dialog.destroy()
