@@ -1,0 +1,140 @@
+"""Field parsing from receipt text. Texts are synthetic, modelled on real receipt wording."""
+
+import pytest
+
+from cepxico.extraction.parser import (
+    find_amount,
+    find_beneficiary_account,
+    find_payment_date,
+    find_receiver_bank,
+    find_sender_bank,
+    find_tracking_key,
+    parse_payment,
+)
+from tests.conftest import with_check_digit
+
+SANTANDER_RECEIPT = """\
+Comprobante de Operación
+Fecha de aplicación: 05/11/2026
+Clave de Rastreo: 2026110540014TRAN00001234567
+Banco receptor: BBVA MEXICO
+Cuenta CLABE Beneficiario: 012180001234567893
+Importe: $1,234.50 MXN
+"""
+
+BANORTE_RECEIPT = """\
+BANCO MERCANTIL DEL NORTE, S.A.
+Fecha Aplicación: 5/11/2026
+Clave de Rastreo: 8846APR1202611050012345678
+Banco Destino: STP
+Cuenta de abono: 646180123456789012
+Importe a Transferir: $500.00
+"""
+
+BBVA_RECEIPT = """\
+BBVA
+Fecha y Hora Operación: 2026-11-05 10:22:01
+Referencia BNET01002611050012345678
+Descripción: pago proveedor Importe: $2,000.00
+Saldo disponible 9,999.99
+"""
+
+
+class TestFullReceipts:
+    def test_santander(self):
+        p = parse_payment(SANTANDER_RECEIPT, "santander.pdf")
+        assert p.sender_bank == "Santander"
+        assert p.payment_date == "05-11-2026"
+        assert p.tracking_key == "2026110540014TRAN00001234567"
+        assert p.receiver_bank == "BBVA MEXICO"
+        assert p.beneficiary_account == "012180001234567893"
+        assert p.amount == "1234.50"
+        assert p.error_reason == ""
+
+    def test_banorte(self):
+        p = parse_payment(BANORTE_RECEIPT)
+        assert p.sender_bank == "Banorte"
+        assert p.payment_date == "05-11-2026"
+        assert p.tracking_key == "8846APR1202611050012345678"
+        assert p.receiver_bank == "STP"
+        assert p.beneficiary_account == "646180123456789012"
+        assert p.amount == "500.00"
+
+    def test_bbva_uses_description_amount_not_balance(self):
+        p = parse_payment(BBVA_RECEIPT)
+        assert p.sender_bank == "BBVA"
+        assert p.payment_date == "05-11-2026"
+        assert p.tracking_key == "BNET01002611050012345678"
+        assert p.amount == "2000.00"
+
+    def test_empty_text_reports_missing_tracking_key_first(self):
+        p = parse_payment("nothing useful here")
+        assert p.error_reason == "Missing clave de rastreo"
+
+
+def test_tracking_key_drops_glued_label():
+    text = "Clave de Rastreo: MBAN01002611050012345678FECHAYHORADECAPTURA 05/11/2026"
+    assert find_tracking_key(text) == "MBAN01002611050012345678"
+
+
+def test_tracking_key_too_short_is_rejected():
+    assert find_tracking_key("Clave de rastreo: ABC123") is None
+
+
+def test_afirme_key_split_across_lines():
+    text = "Clave de rastreo:\nAFIR0100261105\n0012345678\nFolio Interbancario 123"
+    assert find_tracking_key(text, sender_bank="Afirme") == "AFIR01002611050012345678"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Fecha Aplicación: 05/11/2026", "05-11-2026"),
+        ("Fecha: 5/11/26", "05-11-2026"),
+        ("Fecha y Hora Operación: 2026-11-05", "05-11-2026"),
+        ("sin fecha", None),
+    ],
+)
+def test_payment_date(text, expected):
+    assert find_payment_date(text) == expected
+
+
+def test_receiver_bank_strips_quotes():
+    assert find_receiver_bank('Banco destino: "BANORTE"') == "BANORTE"
+
+
+def test_receiver_bank_ignores_empty_capture():
+    # "Banco receptor" stops at the quote and captures only a space; that isn't a bank.
+    assert find_receiver_bank('Banco receptor: "BANORTE"') is None
+
+
+def test_account_prefers_clabe_over_short_number():
+    clabe = with_check_digit("07218000123456789")
+    assert find_beneficiary_account(f"Cuenta/CLABE/Celular: {clabe}") == clabe
+    assert find_beneficiary_account("Cuenta/CLABE/Celular: 5512345678") == "5512345678"
+    assert find_beneficiary_account("Cuenta de abono: 12345") is None
+
+
+def test_amount_prefers_labelled_mxn():
+    assert find_amount("Comisión $5.00\nImporte: $1,500.00 MXN") == "1500.00"
+
+
+def test_missing_receiver_is_fine_with_valid_clabe():
+    clabe = with_check_digit("01218000123456789")
+    text = (
+        "Comprobante de Operación\n"
+        "Fecha de aplicación: 05/11/2026\n"
+        "Clave de Rastreo: MBAN01002611050012345678\n"
+        f"Cuenta Beneficiaria: {clabe}\n"
+        "Importe: $10.00 MXN\n"
+    )
+    p = parse_payment(text)
+    assert p.receiver_bank is None
+    assert p.missing_fields() == []
+
+
+@pytest.mark.xfail(
+    strict=True, reason="Known issue: sender is the first bank named anywhere, even the receiver"
+)
+def test_sender_is_not_confused_with_receiver():
+    assert find_sender_bank("BANORTE\nBanco Destino: BBVA MEXICO") == "BANORTE"

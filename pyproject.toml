@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cepxico"
+version = "2.0.0"
+description = "Extracts SPEI transfer data from receipts and downloads the matching CEP from Banxico."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pdfplumber>=0.10",
+    "pymupdf>=1.23",
+    "pillow>=10.0",
+    "requests>=2.31",
+    "tkinterdnd2>=0.3",
+]
+
+[project.optional-dependencies]
+# OCR for scanned PDFs and screenshots. Large: pulls in PyTorch.
+ocr = ["easyocr>=1.7"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+cepxico = "cepxico.cli:main"
+
+[project.gui-scripts]
+cepxico-gui = "cepxico.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
