@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -67,10 +69,34 @@ def _safe_filename(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_") or "CEP"
 
 
-class BanxicoCEPClient:
-    """Use one instance per batch: it keeps the session cookie and caches catalogs per date."""
+class CatalogCache:
+    """Bank catalogs by date, safe to share between clients on different threads."""
 
-    def __init__(self, output_dir: Path | str, base_url: str = BASE_URL, timeout: float = REQUEST_TIMEOUT):
+    def __init__(self) -> None:
+        self._catalogs: dict[str, BankCatalog] = {}
+        self._lock = threading.Lock()
+
+    def get(self, fecha: str, load: Callable[[], BankCatalog]) -> BankCatalog:
+        # Held while loading, so concurrent receipts for one date fetch the catalog once.
+        with self._lock:
+            if fecha not in self._catalogs:
+                self._catalogs[fecha] = load()
+            return self._catalogs[fecha]
+
+
+class BanxicoCEPClient:
+    """One Banxico session. Not thread-safe, and must not be shared between threads:
+    descarga.do returns the CEP of the session's *last* valida.do, so two receipts
+    checked concurrently on one session could each be saved with the other's CEP.
+    Concurrent workers each use their own client, optionally sharing a CatalogCache."""
+
+    def __init__(
+        self,
+        output_dir: Path | str,
+        base_url: str = BASE_URL,
+        timeout: float = REQUEST_TIMEOUT,
+        catalogs: CatalogCache | None = None,
+    ):
         self.output_dir = Path(output_dir)
         self.base_url = base_url
         self.timeout = timeout
@@ -78,7 +104,7 @@ class BanxicoCEPClient:
         self.session.headers.update(
             {"User-Agent": USER_AGENT, "Referer": base_url, "Accept-Language": "es-MX,es;q=0.9"}
         )
-        self._catalogs: dict[str, BankCatalog] = {}
+        self._catalogs = catalogs if catalogs is not None else CatalogCache()
         self._started = False
 
     def close(self) -> None:
@@ -102,24 +128,26 @@ class BanxicoCEPClient:
 
     def get_catalog(self, fecha: str) -> BankCatalog:
         """Banks participating in SPEI on `fecha` (dd-mm-yyyy). Raises BanxicoError."""
-        if fecha not in self._catalogs:
-            try:
-                self._start()
-                resp = self.session.get(
-                    self.base_url + "instituciones.do",
-                    params={"fecha": fecha},
-                    headers=_XHR,
-                    timeout=self.timeout,
-                )
-                resp.raise_for_status()
-                rows = resp.json().get("instituciones")
-            except (requests.RequestException, ValueError) as e:
-                raise BanxicoError(f"Could not load Banxico bank list: {e}") from e
-            if not rows:
-                raise BanxicoError(f"Banxico returned no bank list for {fecha}")
-            self._catalogs[fecha] = BankCatalog.from_rows(rows)
-            logger.debug("Loaded %d banks for %s", len(self._catalogs[fecha]), fecha)
-        return self._catalogs[fecha]
+        return self._catalogs.get(fecha, lambda: self._load_catalog(fecha))
+
+    def _load_catalog(self, fecha: str) -> BankCatalog:
+        try:
+            self._start()
+            resp = self.session.get(
+                self.base_url + "instituciones.do",
+                params={"fecha": fecha},
+                headers=_XHR,
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            rows = resp.json().get("instituciones")
+        except (requests.RequestException, ValueError) as e:
+            raise BanxicoError(f"Could not load Banxico bank list: {e}") from e
+        if not rows:
+            raise BanxicoError(f"Banxico returned no bank list for {fecha}")
+        catalog = BankCatalog.from_rows(rows)
+        logger.debug("Loaded %d banks for %s", len(catalog), fecha)
+        return catalog
 
     def download_cep(
         self,

@@ -1,0 +1,117 @@
+"""Text extraction: OCR line grouping, engine selection, and a real RapidOCR run."""
+
+import io
+
+import pytest
+
+from cepxico.extraction import text
+from cepxico.extraction.parser import parse_payment
+from cepxico.extraction.text import ExtractionError, extract_text, get_ocr_engine, lines_from_boxes
+
+
+def box(x0, y0, x1, y1):
+    return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+
+
+class TestLinesFromBoxes:
+    def test_label_and_value_columns_become_one_line(self):
+        boxes = [box(400, 102, 800, 128), box(20, 100, 300, 130), box(20, 160, 200, 190)]
+        texts = ["MBAN01002611050012345678", "Clave de rastreo", "Importe"]
+        assert lines_from_boxes(boxes, texts) == ["Clave de rastreo MBAN01002611050012345678", "Importe"]
+
+    def test_slightly_skewed_boxes_stay_on_their_line(self):
+        boxes = [box(20, 100, 300, 130), box(400, 108, 600, 136), box(20, 140, 300, 170)]
+        assert lines_from_boxes(boxes, ["a", "b", "c"]) == ["a b", "c"]
+
+    def test_empty(self):
+        assert lines_from_boxes([], []) == []
+
+
+def missing(module: str):
+    def factory():
+        raise ImportError(f"No module named '{module}'", name=module)
+
+    return factory
+
+
+class TestEngineSelection:
+    @pytest.fixture(autouse=True)
+    def fresh_cache(self):
+        get_ocr_engine.cache_clear()
+        yield
+        get_ocr_engine.cache_clear()
+
+    def test_unknown_engine(self):
+        with pytest.raises(ExtractionError, match="Unknown OCR engine 'tesseract'"):
+            get_ocr_engine("tesseract")
+
+    def test_falls_back_to_next_installed_engine(self, monkeypatch):
+        monkeypatch.setitem(text._ENGINE_FACTORIES, "rapidocr", missing("rapidocr"))
+        monkeypatch.setitem(text._ENGINE_FACTORIES, "easyocr", lambda: "easy")
+        monkeypatch.delenv(text.OCR_ENGINE_ENV, raising=False)
+        assert get_ocr_engine() == "easy"
+
+    def test_env_var_forces_an_engine(self, monkeypatch):
+        monkeypatch.setitem(text._ENGINE_FACTORIES, "rapidocr", lambda: "rapid")
+        monkeypatch.setitem(text._ENGINE_FACTORIES, "easyocr", lambda: "easy")
+        monkeypatch.setenv(text.OCR_ENGINE_ENV, "EasyOCR")
+        assert get_ocr_engine() == "easy"
+
+    def test_forced_engine_missing_does_not_fall_back(self, monkeypatch):
+        monkeypatch.setitem(text._ENGINE_FACTORIES, "easyocr", missing("easyocr"))
+        with pytest.raises(ExtractionError, match="'easyocr' is not installed"):
+            get_ocr_engine("easyocr")
+
+    def test_broken_dependency_is_reported_not_skipped(self, monkeypatch):
+        monkeypatch.setitem(text._ENGINE_FACTORIES, "rapidocr", missing("cv2"))
+        monkeypatch.setitem(text._ENGINE_FACTORIES, "easyocr", lambda: "easy")
+        with pytest.raises(ExtractionError, match="'rapidocr' failed to load: No module named 'cv2'"):
+            get_ocr_engine()
+
+    def test_nothing_installed(self, monkeypatch):
+        for name in text.OCR_ENGINES:
+            monkeypatch.setitem(text._ENGINE_FACTORIES, name, missing(name))
+        monkeypatch.delenv(text.OCR_ENGINE_ENV, raising=False)
+        with pytest.raises(ExtractionError, match="no OCR engine is installed"):
+            get_ocr_engine()
+
+
+def render_receipt(lines: list[str]) -> bytes:
+    """A synthetic screenshot-like receipt: labels left, values right."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    font = ImageFont.load_default(size=28)
+    img = Image.new("RGB", (1100, 60 + 60 * len(lines)), "white")
+    draw = ImageDraw.Draw(img)
+    for i, (label, value) in enumerate(lines):
+        draw.text((30, 30 + 60 * i), label, fill="black", font=font)
+        draw.text((520, 30 + 60 * i), value, fill="black", font=font)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_rapidocr_reads_a_two_column_receipt(tmp_path, monkeypatch):
+    pytest.importorskip("rapidocr")
+    monkeypatch.delenv(text.OCR_ENGINE_ENV, raising=False)
+    get_ocr_engine.cache_clear()
+    image = tmp_path / "comprobante año.png"  # non-ASCII path on purpose
+    image.write_bytes(
+        render_receipt(
+            [
+                ("Fecha de aplicación:", "05/11/2026"),
+                ("Clave de Rastreo:", "MBAN01002611050012345678"),
+                ("Banco receptor:", "BBVA MEXICO"),
+                ("Cuenta Beneficiaria:", "012180001234567893"),
+                ("Importe:", "$1,234.50 MXN"),
+            ]
+        )
+    )
+
+    p = parse_payment(extract_text(image))
+
+    assert p.payment_date == "05-11-2026"
+    assert p.tracking_key == "MBAN01002611050012345678"
+    assert p.receiver_bank == "BBVA MEXICO"
+    assert p.beneficiary_account == "012180001234567893"
+    assert p.amount == "1234.50"

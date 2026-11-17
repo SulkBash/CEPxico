@@ -10,7 +10,9 @@ Sending bank, first clue that works wins:
   3. wording that only appears on one bank's own receipts
   4. the first bank named anywhere on the receipt
 Steps 2-4 never pick the receiving bank: a CEP is always between two different banks,
-and receipts name the receiving bank too.
+and receipts name the receiving bank too. Step 1 is the receipt's own statement, so it's
+returned even if it names the receiving bank; pipeline.py rejects that transfer instead
+of guessing another sender.
 """
 
 from __future__ import annotations
@@ -47,9 +49,7 @@ def identify_receiver(payment: PaymentData, directory: BankDirectory) -> BankMat
     return None
 
 
-def identify_sender(
-    payment: PaymentData, directory: BankDirectory, receiver: Bank | None = None
-) -> BankMatch | None:
+def identify_sender(payment: PaymentData, directory: BankDirectory, *, receiver: Bank) -> BankMatch | None:
     if bank := directory.resolve(payment.sender_bank):
         return BankMatch(bank, BankSource.LABEL)
 

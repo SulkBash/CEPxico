@@ -1,12 +1,14 @@
 """BanxicoCEPClient against a fake HTTP session (no network)."""
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import pytest
 import requests
 
-from cepxico.banks import Bank
-from cepxico.banxico import BanxicoCEPClient, BanxicoError, CEPStatus
+from cepxico.banks import Bank, BankCatalog
+from cepxico.banxico import BanxicoCEPClient, BanxicoError, CatalogCache, CEPStatus
 
 BANORTE = Bank("40072", "BANORTE")
 BBVA = Bank("40012", "BBVA MEXICO")
@@ -139,3 +141,30 @@ def test_catalog_failure_raises_banxico_error(tmp_path, catalog_json):
     client.session = FakeSession({"instituciones": []}, PDF, PDF)
     with pytest.raises(BanxicoError):
         client.get_catalog("10-11-2026")
+
+
+def test_catalog_cache_loads_each_date_once_across_threads():
+    cache = CatalogCache()
+    loads = []
+
+    def load():
+        loads.append(1)
+        time.sleep(0.02)  # wide window for a second thread to race in
+        return BankCatalog([Bank("40012", "BBVA MEXICO")])
+
+    with ThreadPoolExecutor(8) as pool:
+        catalogs = list(pool.map(lambda _: cache.get("05-11-2026", load), range(8)))
+
+    assert len(loads) == 1
+    assert all(c is catalogs[0] for c in catalogs)
+
+
+def test_failed_catalog_load_is_retried():
+    cache = CatalogCache()
+
+    def fail():
+        raise BanxicoError("down")
+
+    with pytest.raises(BanxicoError):
+        cache.get("05-11-2026", fail)
+    assert len(cache.get("05-11-2026", lambda: BankCatalog([]))) == 0

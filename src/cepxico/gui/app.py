@@ -18,10 +18,10 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageGrab
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
-from cepxico.banxico import BanxicoCEPClient
 from cepxico.extraction import SUPPORTED_EXTENSIONS
 from cepxico.gui import theme
-from cepxico.pipeline import FileResult, Outcome, process_file
+from cepxico.pipeline import FileResult, Outcome
+from cepxico.pipeline import process_files as run_batch
 
 logger = logging.getLogger(__name__)
 
@@ -401,26 +401,25 @@ class CEPApp(TkinterDnD.Tk):
     def cancel_processing(self) -> None:
         if self.processing:
             self._cancel.set()
-            self.status_var.set("Cancel requested. Stopping after current file...")
+            self.status_var.set("Cancel requested. Stopping after the files in progress...")
             self.cancel_button.configure(state=tk.DISABLED)
 
     def _worker(self, paths: list[str]) -> None:
         """Runs in a background thread. It never touches Tk directly: UI updates go
         through self._ui_queue and are applied on the Tk thread by _drain_ui_queue()."""
         post = self._post_to_ui
+
+        def on_step(path: str, step: str) -> None:
+            post(self._set_status, path, ItemStatus.PROCESSING, step)
+
+        def on_done(path: str, result: FileResult) -> None:
+            post(self._on_file_done, path, result)
+
         try:
-            with BanxicoCEPClient(self.cep_dir) as client:  # one session for the whole batch
-                for index, path in enumerate(paths, start=1):
-                    if self._cancel.is_set():
-                        post(self._mark_cancelled, paths[index - 1 :])
-                        break
-                    post(self.status_var.set, f"Processing ({index}/{len(paths)}): {os.path.basename(path)}")
-                    result = process_file(
-                        path,
-                        client,
-                        on_step=lambda step, p=path: post(self._set_status, p, ItemStatus.PROCESSING, step),
-                    )
-                    post(self._on_file_done, path, result)
+            results = run_batch(paths, self.cep_dir, on_step=on_step, on_done=on_done, cancel=self._cancel)
+            skipped = [path for path, result in zip(paths, results, strict=True) if result is None]
+            if skipped:
+                post(self._mark_cancelled, skipped)
         except Exception:
             logger.exception("Batch processing failed")
         finally:
@@ -445,6 +444,7 @@ class CEPApp(TkinterDnD.Tk):
             item.result = result
         self.processed_count += 1
         self._set_status(path, OUTCOME_STATUS[result.outcome], result.message)
+        self.status_var.set(f"Processed {self.processed_count}/{len(self.items)}: {os.path.basename(path)}")
 
     def _mark_cancelled(self, paths: list[str]) -> None:
         for path in paths:

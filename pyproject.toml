@@ -12,14 +12,16 @@ dependencies = [
     "pdfplumber>=0.10",
     "pymupdf>=1.23",
     "pillow>=10.0",
+    "rapidocr>=3.10,<4",  # OCR for scans and screenshots; ONNX Runtime, models bundled
     "requests>=2.31",
     "tkinterdnd2>=0.3",
 ]
 
 [project.optional-dependencies]
-# OCR for scanned PDFs and screenshots. Large: pulls in PyTorch.
-ocr = ["easyocr>=1.7"]
+# The v1 OCR engine, kept for comparison (CEPXICO_OCR=easyocr). Large: pulls in PyTorch.
+easyocr = ["easyocr>=1.7"]
 dev = ["pytest>=8.0", "ruff>=0.6"]
+build = ["pyinstaller>=6.10"]
 
 [project.scripts]
 cepxico = "cepxico.cli:main"

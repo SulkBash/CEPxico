@@ -8,9 +8,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from cepxico import __version__
-from cepxico.banxico import BanxicoCEPClient
 from cepxico.config import DEFAULT_CEP_DIR
-from cepxico.pipeline import FileResult, Outcome, process_file
+from cepxico.pipeline import DEFAULT_JOBS, MAX_JOBS, FileResult, Outcome, process_files
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,9 +25,26 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CEP_DIR,
         help=f"folder for downloaded CEPs (default: {DEFAULT_CEP_DIR})",
     )
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=_jobs,
+        default=DEFAULT_JOBS,
+        help=f"receipts to check at once, 1-{MAX_JOBS} (default: {DEFAULT_JOBS})",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="show debug output")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
+
+
+def _jobs(value: str) -> int:
+    try:
+        jobs = int(value)
+    except ValueError:
+        jobs = 0
+    if not 1 <= jobs <= MAX_JOBS:
+        raise argparse.ArgumentTypeError(f"must be a whole number from 1 to {MAX_JOBS}")
+    return jobs
 
 
 def configure_logging(verbose: bool) -> None:
@@ -70,8 +86,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run(cep_dir=args.out)
         return 0
 
-    with BanxicoCEPClient(args.out) as client:
-        results = [process_file(path, client) for path in args.files]
+    results = [r for r in process_files(args.files, args.out, jobs=args.jobs) if r is not None]
 
     print_summary(results)
     return 0 if all(r.outcome is Outcome.SUCCESS for r in results) else 1

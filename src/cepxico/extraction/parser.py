@@ -27,12 +27,13 @@ SENDER_PATTERNS = (
 )
 
 RECEIVER_PATTERNS = (
-    r"Banco Destino[:\s]*([^\n]+)",
-    r"Banco receptor\s*[:\s]*([^\n\"]+)",
-    r"Banco beneficiario[:\s]*([^\n]+)",
-    r"Banco\s*Participante[:\s]*([^\n]+)",
-    r"Banco destino[:\s]*([^\n]+)",
+    r"Banco\s*destino[:\s]*([^\n]+)",
+    r"Banco\s*receptor[:\s\"]*([^\n\"]+)",  # stops at a closing quote; skips an opening one
+    r"Banco\s*beneficiario[:\s]*([^\n]+)",
     r"Instituci[oó]n\s*receptora[:\s]*([^\n]+)",
+    # Inherited from v1, source receipt unknown. "Participante" can name either bank, so
+    # it's tried last. If it names the sender, pipeline.py rejects the same-bank pair.
+    r"Banco\s*participante[:\s]*([^\n]+)",
 )
 
 
@@ -51,7 +52,7 @@ def find_sender_bank(text: str) -> str | None:
 
 def find_receiver_bank(text: str) -> str | None:
     """Text next to a receiving-bank label ("Banco destino: ..."), or None."""
-    return _labelled_value(text, RECEIVER_PATTERNS)
+    return _labelled_value(text, RECEIVER_PATTERNS, re.IGNORECASE)
 
 
 def _mentions(text: str, bank_name: str) -> bool:

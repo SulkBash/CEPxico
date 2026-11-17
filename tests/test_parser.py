@@ -106,13 +106,31 @@ def test_payment_date(text, expected):
     assert find_payment_date(text) == expected
 
 
+@pytest.mark.parametrize(
+    "text",
+    ["BANCO DESTINO: BANORTE", "Banco Receptor: BANORTE", "banco beneficiario: BANORTE"],
+)
+def test_receiver_bank_label_any_case(text):
+    assert find_receiver_bank(text) == "BANORTE"
+
+
+def test_receiver_bank_participante_is_last_resort():
+    text = "Banco participante: SANTANDER\nBanco destino: BANORTE"
+    assert find_receiver_bank(text) == "BANORTE"
+    assert find_receiver_bank("Banco participante: SANTANDER") == "SANTANDER"
+
+
 def test_receiver_bank_strips_quotes():
     assert find_receiver_bank('Banco destino: "BANORTE"') == "BANORTE"
 
 
+def test_receiver_bank_quoted_value():
+    assert find_receiver_bank('Banco receptor: "BANORTE"') == "BANORTE"
+    assert find_receiver_bank('Banco receptor: BANORTE", "Cuenta": "123"') == "BANORTE"
+
+
 def test_receiver_bank_ignores_empty_capture():
-    # "Banco receptor" stops at the quote and captures only a space; that isn't a bank.
-    assert find_receiver_bank('Banco receptor: "BANORTE"') is None
+    assert find_receiver_bank('Banco receptor: ""') is None
 
 
 def test_account_prefers_clabe_over_short_number():

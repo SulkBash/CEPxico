@@ -58,6 +58,12 @@ class TestSender:
         match = identify_sender(p, directory, receiver=BANORTE)
         assert match.bank == SANTANDER
 
+    def test_label_naming_the_receiver_is_kept(self, directory):
+        # The receipt's own statement isn't overridden by a guess; pipeline.py rejects the pair.
+        p = payment("Santander\nBanco emisor: BBVA", sender_bank="BBVA")
+        match = identify_sender(p, directory, receiver=BBVA)
+        assert match.bank == BBVA and match.source is BankSource.LABEL
+
     def test_nothing_to_go_on(self, directory):
         p = payment("Banco Destino: BBVA MEXICO", receiver_bank="BBVA MEXICO")
         assert identify_sender(p, directory, receiver=BBVA) is None
@@ -69,7 +75,7 @@ class TestSampleReceipts:
     def identify(self, directory, text):
         p = parse_payment(text)
         receiver = identify_receiver(p, directory)
-        sender = identify_sender(p, directory, receiver=receiver.bank if receiver else None)
+        sender = identify_sender(p, directory, receiver=receiver.bank)
         return sender, receiver
 
     def test_santander_to_bbva(self, directory):
@@ -83,5 +89,6 @@ class TestSampleReceipts:
         assert receiver.bank == Bank("90646", "STP")
 
     def test_bbva_from_tracking_key(self, directory):
-        sender, _ = self.identify(directory, BBVA_RECEIPT)
+        # This sample names no receiving bank; any other bank stands in for it.
+        sender = identify_sender(parse_payment(BBVA_RECEIPT), directory, receiver=BANORTE)
         assert sender.bank == BBVA and sender.source is BankSource.TRACKING_KEY

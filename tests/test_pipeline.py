@@ -1,3 +1,5 @@
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -8,7 +10,7 @@ from cepxico.banxico import BanxicoError, CEPResult, CEPStatus
 from cepxico.cli import main
 from cepxico.identify import BankSource
 from cepxico.models import PaymentData
-from cepxico.pipeline import Outcome, process_file
+from cepxico.pipeline import Outcome, process_file, process_files
 from tests.conftest import load_catalog, with_check_digit
 
 COMPLETE = PaymentData(
@@ -93,6 +95,19 @@ def test_unidentified_sender_skips_banxico(receipt, extracted):
     assert client.calls == []
 
 
+def test_same_bank_on_both_sides_skips_banxico(receipt, extracted):
+    # Receipt says the money left BBVA, and the CLABE is a BBVA account.
+    extracted(PaymentData(**{**COMPLETE.__dict__, "sender_bank": "BBVA"}))
+    client = FakeClient(CEPResult(CEPStatus.FOUND, "unused"))
+
+    result = process_file(receipt, client)
+
+    assert result.outcome is Outcome.FAILED
+    assert result.message.startswith("Sending and receiving bank are both BBVA MEXICO")
+    assert result.sender.bank == result.receiver.bank == Bank("40012", "BBVA MEXICO")
+    assert client.calls == []
+
+
 def test_catalog_unavailable(receipt, extracted):
     extracted(COMPLETE)
     client = FakeClient(CEPResult(CEPStatus.FOUND, "unused"), catalog=BanxicoError("Banxico down"))
@@ -131,3 +146,79 @@ def test_cli_exit_code_and_summary(tmp_path, capsys):
     exit_code = main([str(tmp_path / "missing.pdf"), "--out", str(tmp_path)])
     assert exit_code == 1
     assert "missing.pdf: File not found" in capsys.readouterr().out
+
+
+class TestProcessFiles:
+    """Batches: order, one Banxico session per thread, cancelling."""
+
+    def run(self, paths, extracted, jobs=4, **kwargs):
+        extracted(COMPLETE)
+        clients: list[FakeClient] = []
+        users: dict[int, set[int]] = {}  # client id -> threads that used it
+        lock = threading.Lock()
+
+        class TrackingClient(FakeClient):
+            def download_cep(self, **query):
+                with lock:
+                    users.setdefault(id(self), set()).add(threading.get_ident())
+                time.sleep(0.02)  # let the workers overlap
+                return super().download_cep(**query)
+
+            def close(self):
+                self.closed = True
+
+        def factory(_catalogs):
+            client = TrackingClient(CEPResult(CEPStatus.FOUND, "ok", pdf_path=Path("CEP.pdf")))
+            with lock:
+                clients.append(client)
+            return client
+
+        results = process_files(paths, "unused", jobs=jobs, client_factory=factory, **kwargs)
+        return results, clients, users
+
+    def test_results_in_input_order(self, tmp_path, extracted):
+        paths = [tmp_path / f"r{i}.pdf" for i in range(10)]
+        for p in paths:
+            p.write_bytes(b"%PDF")
+        results, _, _ = self.run(paths, extracted)
+        assert [r.path for r in results] == paths
+        assert all(r.outcome is Outcome.SUCCESS for r in results)
+
+    def test_each_thread_has_its_own_session(self, tmp_path, extracted):
+        paths = [tmp_path / f"r{i}.pdf" for i in range(12)]
+        for p in paths:
+            p.write_bytes(b"%PDF")
+        _, clients, users = self.run(paths, extracted, jobs=4)
+        assert 1 < len(clients) <= 4
+        assert all(len(threads) == 1 for threads in users.values())
+        assert all(c.closed for c in clients)
+
+    def test_callbacks_get_paths_as_given(self, tmp_path, extracted):
+        path = str(tmp_path / "r.pdf")
+        Path(path).write_bytes(b"%PDF")
+        steps, done = [], []
+        self.run(
+            [path], extracted, on_step=lambda p, s: steps.append((p, s)), on_done=lambda p, r: done.append(p)
+        )
+        assert done == [path]
+        assert steps[0] == (path, "Extracting")
+
+    def test_cancel_skips_files_not_started(self, tmp_path, extracted):
+        paths = [tmp_path / f"r{i}.pdf" for i in range(6)]
+        for p in paths:
+            p.write_bytes(b"%PDF")
+        cancel = threading.Event()
+        results, _, _ = self.run(paths, extracted, jobs=1, cancel=cancel, on_done=lambda p, r: cancel.set())
+        assert results[0].outcome is Outcome.SUCCESS
+        assert results[1:] == [None] * 5
+
+    def test_empty_batch(self, extracted):
+        results, clients, _ = self.run([], extracted)
+        assert results == [] and clients == []
+
+
+@pytest.mark.parametrize("value", ["0", "9", "two"])
+def test_cli_rejects_bad_jobs(value, capsys):
+    with pytest.raises(SystemExit):
+        main(["r.pdf", "--jobs", value])
+    assert "--jobs" in capsys.readouterr().err
