@@ -3,6 +3,8 @@
 import pytest
 
 from cepxico.extraction.parser import (
+    clean_field,
+    correct_payment,
     find_amount,
     find_beneficiary_account,
     find_payment_date,
@@ -11,6 +13,7 @@ from cepxico.extraction.parser import (
     find_tracking_key,
     parse_payment,
 )
+from cepxico.models import PaymentData
 from tests.conftest import with_check_digit
 
 SANTANDER_RECEIPT = """\
@@ -170,3 +173,150 @@ def test_missing_receiver_is_fine_with_valid_clabe():
 )
 def test_sender_bank_label(text, expected):
     assert find_sender_bank(text) == expected
+
+
+# --- Wording and layouts that used to be misread --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # OCR spaces the currency sign; the balance must not be taken instead.
+        ("Monto: $ 1,234.50\nComisión: $ 0.00\nSaldo: 9,999.99", "1234.50"),
+        ("Monto transferido\n$ 1,234.50\nSaldo disponible 8,765.43", "1234.50"),
+        ("Monto: $1,500 MXN\nFolio 123", "1500.00"),  # whole pesos after a label
+        ("Importe: -$ 1,234.50 MXN", "1234.50"),
+        ("Importe: 1,234.50, gracias", "1234.50"),
+        # BBVA Net Cash scan: the IVA comes later and was taken as the last amount.
+        (
+            "BBVA Net Cash - Pagos Interbancarios\n"
+            "Descripción: ASESORIA Importe de la operación: 1,160.00 MXP\n"
+            "RFC del tercero: XAXX010101000 IVA del pago: 160.00\n",
+            "1160.00",
+        ),
+    ],
+)
+def test_amount_layouts(text, expected):
+    assert find_amount(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A labelled date beats an earlier print date, whatever the label's case.
+        ("Impreso 01/12/2026\nFECHA DE APLICACIÓN: 05/11/2026", "05-11-2026"),
+        ("Fecha de aplicacion: 05/11/2026", "05-11-2026"),  # OCR dropped the accent
+        ("Fecha de operación: jueves, 5 de noviembre de 2026", "05-11-2026"),
+        ("Fecha: 05/Nov/2026", "05-11-2026"),
+        ("05 nov. 2026 14:03 h", "05-11-2026"),
+        ("Fecha de operación: 05-11-2026", "05-11-2026"),
+        ("2026-11-05 10:00", "05-11-2026"),  # not read as 26-11-05
+        ("Ref 31/31/2026 Fecha 01/02/2026", "01-02-2026"),  # impossible date skipped
+    ],
+)
+def test_payment_date_layouts(text, expected):
+    assert find_payment_date(text) == expected
+
+
+CLABE = with_check_digit("01218000123456789")
+GROUPED_CLABE = f"{CLABE[:4]} {CLABE[4:8]} {CLABE[8:12]} {CLABE[12:16]} {CLABE[16:]}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"Cuenta CLABE Beneficiario: {GROUPED_CLABE}",
+        f"Cuenta destino: {CLABE}",
+        f"Cuenta de deposito: {CLABE}",  # OCR dropped the accent
+        f"CUENTA DE ABONO {CLABE} Monto $10.00",
+        f"Para: Juan Pérez\n{GROUPED_CLABE}\nFolio 1234567890",  # unlabelled, only valid CLABE
+    ],
+)
+def test_account_layouts(text):
+    assert find_beneficiary_account(text) == CLABE
+
+
+def test_unlabelled_clabe_must_be_the_only_one():
+    other = with_check_digit("07218000123456789")
+    assert find_beneficiary_account(f"Origen {other}\nDestino {CLABE}") is None
+
+
+def test_grouped_card_is_not_merged_with_next_number():
+    text = "Cuenta de abono: 4152 3134 5678 9012 1,500.00"
+    assert find_beneficiary_account(text) == "4152313456789012"
+
+
+def test_tracking_key_longer_than_banxico_allows_is_rejected():
+    assert find_tracking_key("Clave de rastreo: MBAN01002611050000123456ABCDEFGHI") is None
+
+
+# --- Fields typed in by the user -----------------------------------------------
+
+VALID_CLABE = with_check_digit("01218000123456789")
+
+
+@pytest.mark.parametrize(
+    ("name", "raw", "expected"),
+    [
+        ("payment_date", "5/11/2026", "05-11-2026"),
+        ("payment_date", "05-11-26", "05-11-2026"),
+        ("payment_date", "5 de noviembre de 2026", "05-11-2026"),
+        ("payment_date", "   ", None),  # empty = unknown
+        ("tracking_key", " 058-29/10/2026/29-245akjnw23 ", "0582910202629245AKJNW23"),
+        ("beneficiary_account", "0121 8000 1234 5678 9" + VALID_CLABE[-1], VALID_CLABE),
+        ("beneficiary_account", "4152-3134-5678-9012", "4152313456789012"),
+        ("beneficiary_account", "55 1234 5678", "5512345678"),
+        ("amount", "$1,500", "1500.00"),
+        ("amount", "318,940.25 MXP", "318940.25"),
+        ("sender_bank", "  banorte   ixe ", "banorte ixe"),
+    ],
+)
+def test_clean_field(name, raw, expected):
+    assert clean_field(name, raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "raw", "problem"),
+    [
+        ("payment_date", "31/02/2026", "valid date"),
+        ("payment_date", "ayer", "valid date"),
+        ("tracking_key", "A" * 31, "1 to 30"),
+        ("beneficiary_account", "***************756", "digits only"),
+        ("beneficiary_account", "12345", "has 5 digits"),
+        ("beneficiary_account", VALID_CLABE[:-1] + str((int(VALID_CLABE[-1]) + 1) % 10), "typo"),
+        ("amount", "0.00", "valid amount"),
+        ("amount", "-$50.00", "valid amount"),
+        ("amount", "mil pesos", "valid amount"),
+    ],
+)
+def test_clean_field_rejects(name, raw, problem):
+    with pytest.raises(ValueError, match=problem):
+        clean_field(name, raw)
+
+
+def test_correct_payment_marks_changed_fields():
+    read = PaymentData("r.pdf", payment_date="12-11-2026", amount="48750.00", error_reason="Missing cuenta")
+
+    corrected, errors = correct_payment(
+        read, {"beneficiary_account": VALID_CLABE, "amount": "48,750.00", "receiver_bank": "KUSPIT"}
+    )
+
+    assert errors == {}
+    assert corrected.beneficiary_account == VALID_CLABE
+    assert corrected.edited_fields == ("receiver_bank", "beneficiary_account")  # amount didn't change
+    assert corrected.error_reason == ""
+    assert corrected.payment_date == "12-11-2026"
+    # A later correction keeps the earlier ones marked.
+    again, _ = correct_payment(corrected, {"payment_date": "13/11/2026"})
+    assert again.edited_fields == ("payment_date", "receiver_bank", "beneficiary_account")
+
+
+def test_correct_payment_reports_every_problem_and_changes_nothing():
+    read = PaymentData("r.pdf")
+
+    corrected, errors = correct_payment(
+        read, {"beneficiary_account": "123", "amount": "x", "tracking_key": "OK1"}
+    )
+
+    assert corrected is read
+    assert set(errors) == {"beneficiary_account", "amount"}

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
@@ -61,23 +61,30 @@ def process_file(
     path: Path | str,
     client: CEPClient,
     on_step: Callable[[str], None] | None = None,
+    payment: PaymentData | None = None,
 ) -> FileResult:
-    """Processes one receipt. Never raises: every problem becomes a FAILED result."""
+    """Processes one receipt. Never raises: every problem becomes a FAILED result.
+
+    `payment` is data already read from the file, possibly corrected by the user (see
+    extraction.correct_payment); the file isn't read again when it's given."""
     path = Path(path)
     step = on_step or (lambda _msg: None)
     try:
-        return _process(path, client, step)
+        return _process(path, client, step, payment)
     except Exception as e:  # keep a batch going whatever happens to one file
         logger.exception("Unexpected error processing %s", path.name)
-        return FileResult(path, Outcome.FAILED, f"Unexpected error: {e}")
+        return FileResult(path, Outcome.FAILED, f"Unexpected error: {e}", payment)
 
 
-def _process(path: Path, client: CEPClient, step: Callable[[str], None]) -> FileResult:
+def _process(
+    path: Path, client: CEPClient, step: Callable[[str], None], payment: PaymentData | None
+) -> FileResult:
     if not path.is_file():
-        return FileResult(path, Outcome.FAILED, "File not found")
+        return FileResult(path, Outcome.FAILED, "File not found", payment)
 
-    step("Extracting")
-    payment = extract_payment(path)
+    if payment is None:
+        step("Extracting")
+        payment = extract_payment(path)
     missing = payment.missing_fields()
     if missing:
         reason = payment.error_reason or f"Missing {FIELD_LABELS[missing[0]]}"
@@ -95,6 +102,19 @@ def _process(path: Path, client: CEPClient, step: Callable[[str], None]) -> File
     if not receiver:
         return FileResult(
             path, Outcome.FAILED, f"Receiving bank '{payment.receiver_bank}' not in Banxico's list", payment
+        )
+    if (
+        "sender_bank" in payment.edited_fields
+        and payment.sender_bank
+        and not directory.resolve(payment.sender_bank)
+    ):
+        # Typed by the user: report it rather than fall back to guessing from the receipt.
+        return FileResult(
+            path,
+            Outcome.FAILED,
+            f"Sending bank '{payment.sender_bank}' not in Banxico's list",
+            payment,
+            receiver=receiver,
         )
     sender = identify_sender(payment, directory, receiver=receiver.bank)
     if not sender:
@@ -144,9 +164,12 @@ def process_files(
     on_done: Callable[[Path | str, FileResult], None] | None = None,
     cancel: threading.Event | None = None,
     client_factory: Callable[[CatalogCache], CEPClient] | None = None,
+    payments: Mapping[Path | str, PaymentData] | None = None,
 ) -> list[FileResult | None]:
     """Processes receipts `jobs` at a time and returns their results in input order.
 
+    `payments` maps paths (as given) to data to use instead of reading those files,
+    such as fields the user corrected.
     Once `cancel` is set, files not yet started are skipped (None in the results);
     files in progress finish. Callbacks receive each path exactly as given and run on
     worker threads. Each worker thread gets its own Banxico session (see
@@ -171,7 +194,8 @@ def process_files(
         if cancel is not None and cancel.is_set():
             return None
         step = (lambda message: on_step(path, message)) if on_step else None
-        result = process_file(path, thread_client(), on_step=step)
+        payment = payments.get(path) if payments else None
+        result = process_file(path, thread_client(), on_step=step, payment=payment)
         if on_done:
             on_done(path, result)
         return result

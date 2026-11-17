@@ -72,7 +72,13 @@ legal_name = "Banca Afirme, S.A., Institución de Banca Múltiple, Afirme Grupo 
 ["072"]  # BANORTE (catalog: "BANORTE/IXE" until 2019)
 legal_name = "Banco Mercantil del Norte, S.A., Institución de Banca Múltiple, Grupo Financiero Banorte"
 aliases = ["IXE"]
-receipt_signatures = ["Banco Mercantil del Norte"]  # inherited from v1 parser
+receipt_signatures = [
+    "Banco Mercantil del Norte",  # inherited from v1 parser
+    # Phone line in the footer of the business "Recibo de Operación" (DIRECTA = 347 3282
+    # on a keypad); confirmed on a real receipt, 2026-11. The receipt never names the bank
+    # in its text: "Banorte" is only in the logo.
+    "800 DIRECTA",
+]
 
 ["106"]  # BANK OF AMERICA (catalog: "BAMSA" until 2017)
 legal_name = "Bank of America México, S.A., Institución de Banca Múltiple"

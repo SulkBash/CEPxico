@@ -1,5 +1,6 @@
 """BanxicoCEPClient against a fake HTTP session (no network)."""
 
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -36,8 +37,11 @@ class FakeSession:
     pdf: FakeResponse
     posted: dict | None = None
     headers: dict = field(default_factory=dict)
+    cookies: requests.cookies.RequestsCookieJar = field(default_factory=requests.cookies.RequestsCookieJar)
+    calls: list[str] = field(default_factory=list)
 
     def get(self, url, params=None, **_kwargs):
+        self.calls.append(url)
         if url.endswith("instituciones.do"):
             return FakeResponse(json_data=self.catalog_json)
         if url.endswith("descarga.do"):
@@ -168,3 +172,36 @@ def test_failed_catalog_load_is_retried():
     with pytest.raises(BanxicoError):
         cache.get("05-11-2026", fail)
     assert len(cache.get("05-11-2026", lambda: BankCatalog([]))) == 0
+
+
+def test_each_lookup_starts_a_new_session(tmp_path, catalog_json, bbva_clabe):
+    """descarga.do serves the session's last CEP: a cookie from an earlier lookup must
+    never reach the next one, or a rejected lookup could download the previous CEP."""
+    client = BanxicoCEPClient(tmp_path)
+    client.session = session = FakeSession(catalog_json, FakeResponse(text="ok"), PDF)
+    session.cookies.set("JSESSIONID", "previous-receipt")
+    client._started = True
+
+    client.download_cep(
+        fecha="10-11-2026",
+        clave_rastreo="MBAN01002611100012345678",
+        sender=BANORTE,
+        receiver=BBVA,
+        account=bbva_clabe,
+        amount="10",
+    )
+
+    assert "JSESSIONID" not in session.cookies
+    assert session.calls[0] == client.base_url  # new session before valida.do
+
+
+def test_catalog_cache_loads_different_dates_in_parallel():
+    cache = CatalogCache()
+    barrier = threading.Barrier(2, timeout=2)
+
+    def load():
+        barrier.wait()  # deadlocks (BrokenBarrierError) if loads are serialized
+        return BankCatalog([])
+
+    with ThreadPoolExecutor(2) as pool:
+        list(pool.map(lambda fecha: cache.get(fecha, load), ["05-11-2026", "06-11-2026"]))

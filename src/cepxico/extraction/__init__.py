@@ -5,11 +5,18 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from cepxico.extraction.parser import parse_payment
+from cepxico.extraction.parser import correct_payment, parse_payment
 from cepxico.extraction.text import SUPPORTED_EXTENSIONS, ExtractionError, extract_text
 from cepxico.models import PaymentData
 
-__all__ = ["SUPPORTED_EXTENSIONS", "ExtractionError", "extract_payment", "extract_text", "parse_payment"]
+__all__ = [
+    "SUPPORTED_EXTENSIONS",
+    "ExtractionError",
+    "correct_payment",
+    "extract_payment",
+    "extract_text",
+    "parse_payment",
+]
 
 logger = logging.getLogger(__name__)
 

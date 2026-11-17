@@ -32,11 +32,18 @@ needed for end users: see [Build the Windows app](#build-the-windows-app).
 cepxico                               # desktop app (drag & drop, Ctrl+V to paste screenshots)
 cepxico receipt1.pdf receipt2.png     # command line; exit code 0 only if every CEP was found
 cepxico *.pdf --out D:\CEPs -v        # custom output folder, debug logging
+cepxico D:\Receipts                   # every PDF/PNG/JPG in a folder
 cepxico *.pdf --jobs 2                # receipts checked at once (default 4, max 8)
 python -m cepxico                     # same as `cepxico`
 ```
 
 `cepxico-gui` opens the desktop app without a console window.
+
+In the desktop app, **Process Files** checks every receipt not yet confirmed; receipts
+whose CEP was already saved are left alone (remove and re-add one to check it again).
+When a receipt fails or isn't found at Banxico, double-click it (or **Edit Fields**) to
+correct or fill in any field from the receipt, for example an account the receipt only
+shows as `***756`. Results checked with typed fields are marked `[edited]`.
 
 ## How it works
 
@@ -48,7 +55,7 @@ receipt ─► extraction ─► PaymentData ─► identify ─► sender/recei
 
 | Module | Responsibility |
 |---|---|
-| `extraction/text.py` | Raw text from PDFs; OCR (RapidOCR) for scans and images |
+| `extraction/text.py` | Raw text from PDFs (PyMuPDF); OCR (RapidOCR) for scans and images |
 | `extraction/parser.py` | Pulls date, clave de rastreo, bank labels, account and amount out of text |
 | `banks.py` | Banxico's catalog, the bundled bank reference data, name matching, CLABE validation |
 | `identify.py` | Decides the sending and receiving bank, and records how |
@@ -89,7 +96,8 @@ under another's name. OCR runs one image at a time (it already uses every CPU co
 [RapidOCR](https://github.com/RapidAI/RapidOCR) runs PaddleOCR's PP-OCRv6 models on ONNX
 Runtime; the models ship inside the package, so it works offline. Text boxes are
 regrouped into lines so a label and a value in separate columns ("Clave de rastreo"
-… "MBAN01…") end up on one line, as in a PDF.
+… "MBAN01…") end up on one line. PDF text goes through the same grouping, so PDFs and
+images reach the parser in the same layout.
 
 It replaced EasyOCR (v1), which needed PyTorch (about 2 GB). On synthetic receipts it
 was about 2.7x faster per image, loaded in 2 s instead of 15 s, and misread fewer fields

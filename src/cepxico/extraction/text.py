@@ -1,5 +1,8 @@
 """Getting raw text out of receipts: embedded PDF text first, OCR as a fallback.
 
+PDF text and OCR text share one layout: words are grouped into lines by position
+(lines_from_boxes), so the parser sees the same thing whichever way a receipt was read.
+
 OCR engines:
   - RapidOCR (default): PaddleOCR's PP-OCRv6 models on ONNX Runtime. About 50 MB
     installed, models bundled, multilingual including Spanish accents.
@@ -16,10 +19,14 @@ from collections.abc import Callable, Sequence
 from functools import lru_cache
 from pathlib import Path
 
-import pdfplumber
 import pymupdf
 
 logger = logging.getLogger(__name__)
+
+# Word boxes as tall as the glyphs instead of the font's full ascent and descent. With
+# the full height, boxes on tightly spaced lines overlap and lines_from_boxes merges
+# those lines into one. A process-wide setting, used only by text extraction here.
+pymupdf.TOOLS.set_small_glyph_heights(True)
 
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg"})
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | {".pdf"}
@@ -50,10 +57,10 @@ Box = Sequence[Sequence[float]]  # 4 corner points [[x, y], ...]
 
 
 def lines_from_boxes(boxes: Sequence[Box], texts: Sequence[str]) -> list[str]:
-    """Groups OCR text boxes into lines, the way pdfplumber lays out PDF text.
+    """Groups words or OCR text boxes into lines, left to right.
 
     Receipts often put a label and its value in separate columns ("Clave de rastreo"
-    ... "MBAN0100..."); OCR returns those as separate boxes. Boxes whose vertical centre
+    ... "MBAN0100..."), which come back as separate boxes. Boxes whose vertical centre
     falls inside the current line's height are joined left to right, so the parser
     sees "Clave de rastreo MBAN0100..." on one line.
     """
@@ -142,9 +149,20 @@ def _ocr(image: bytes) -> str:
 # ------------------------------------------------------------------------------
 
 
+def _page_text(page: pymupdf.Page) -> str:
+    # Each word: (x0, y0, x1, y1, text, block, line, word number). MuPDF splits words at
+    # spaces and at gaps between glyphs, so PDFs that place every glyph separately
+    # still come out with spaces between words.
+    words = page.get_text("words")
+    if not words:
+        return ""
+    boxes = [[(w[0], w[1]), (w[2], w[1]), (w[2], w[3]), (w[0], w[3])] for w in words]
+    return "\n".join(lines_from_boxes(boxes, [w[4] for w in words])) + "\n"
+
+
 def _pdf_text(path: Path) -> str:
-    with pdfplumber.open(path) as pdf:
-        return "".join(page_text + "\n" for page in pdf.pages if (page_text := page.extract_text()))
+    with pymupdf.open(path) as doc:
+        return "".join(_page_text(page) for page in doc)
 
 
 def _ocr_pdf(path: Path) -> str:
@@ -173,5 +191,5 @@ def extract_text(path: Path | str) -> str:
         return text
     except ExtractionError:
         raise
-    except Exception as e:  # pdfplumber/pymupdf/OCR engines raise many unrelated types
+    except Exception as e:  # pymupdf and the OCR engines raise many unrelated types
         raise ExtractionError(f"Failed to read file: {e}") from e

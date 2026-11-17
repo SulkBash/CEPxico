@@ -115,3 +115,81 @@ def test_rapidocr_reads_a_two_column_receipt(tmp_path, monkeypatch):
     assert p.receiver_bank == "BBVA MEXICO"
     assert p.beneficiary_account == "012180001234567893"
     assert p.amount == "1234.50"
+
+
+# --- PDF text ------------------------------------------------------------------
+
+PDF_FIELDS = [
+    ("Fecha de aplicación:", "05/11/2026"),
+    ("Clave de Rastreo:", "MBAN01002611050012345678"),
+    ("Banco receptor:", "BBVA MEXICO"),
+    ("Cuenta Beneficiaria:", "012180001234567893"),
+    ("Importe:", "$1,234.50 MXN"),
+]
+
+
+def make_pdf(
+    path, *, leading=18.0, value_size=10.0, value_dy=0.0, per_glyph=False, stream_values_first=False
+):
+    """A text PDF receipt: labels at x=50, values at x=230 (bold).
+
+    per_glyph: every glyph drawn on its own with no space characters, as some
+    generators do. stream_values_first: values drawn before labels, so the content
+    stream order differs from the reading order."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+
+    def draw(x, y, s, size, font):
+        if not per_glyph:
+            page.insert_text((x, y), s, fontsize=size, fontname=font)
+            return
+        for ch in s:
+            if ch != " ":
+                page.insert_text((x, y), ch, fontsize=size, fontname=font)
+            x += pymupdf.get_text_length(ch, font, size)
+
+    labels = [(50, 90 + i * leading, label, 10, "helv") for i, (label, _) in enumerate(PDF_FIELDS)]
+    values = [
+        (230, 90 + i * leading + value_dy, value, value_size, "hebo")
+        for i, (_, value) in enumerate(PDF_FIELDS)
+    ]
+    if stream_values_first:
+        ops = values + labels
+    else:
+        ops = [op for pair in zip(labels, values, strict=True) for op in pair]
+    for op in ops:
+        draw(*op)
+    doc.save(path)
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {},
+        {"stream_values_first": True},
+        # Lines closer than the font's full height, with a bigger, lower value: full-height
+        # word boxes overlap here and used to merge every line into one.
+        {"leading": 9.5, "value_size": 12, "value_dy": 2},
+    ],
+    ids=["plain", "stream-out-of-order", "tight-lines"],
+)
+def test_pdf_label_and_value_columns_become_lines(tmp_path, layout):
+    pdf = tmp_path / "comprobante.pdf"
+    make_pdf(pdf, **layout)
+
+    lines = extract_text(pdf).splitlines()
+
+    assert lines == [f"{label} {value}" for label, value in PDF_FIELDS]
+
+
+def test_pdf_glyphs_drawn_one_by_one_keep_word_spaces(tmp_path):
+    pdf = tmp_path / "comprobante.pdf"
+    make_pdf(pdf, per_glyph=True)
+
+    p = parse_payment(extract_text(pdf))
+
+    assert p.receiver_bank == "BBVA MEXICO"  # pdfplumber read "BBVAMEXICO"
+    assert p.tracking_key == "MBAN01002611050012345678"
+    assert p.amount == "1234.50"

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import logging
 from collections.abc import Sequence
 from pathlib import Path
 
 from cepxico import __version__
 from cepxico.config import DEFAULT_CEP_DIR
+from cepxico.extraction import SUPPORTED_EXTENSIONS
 from cepxico.pipeline import DEFAULT_JOBS, MAX_JOBS, FileResult, Outcome, process_files
 
 
@@ -18,7 +20,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Extract SPEI transfer data from receipts and download their CEP from Banxico. "
         "Run without files to open the desktop app.",
     )
-    parser.add_argument("files", nargs="*", type=Path, help="receipt PDF/image file(s) to process")
+    parser.add_argument(
+        "files", nargs="*", type=Path, help="receipt PDF/image files, wildcards (*.pdf) or folders"
+    )
     parser.add_argument(
         "--out",
         type=Path,
@@ -45,6 +49,32 @@ def _jobs(value: str) -> int:
     if not 1 <= jobs <= MAX_JOBS:
         raise argparse.ArgumentTypeError(f"must be a whole number from 1 to {MAX_JOBS}")
     return jobs
+
+
+def expand_paths(args: Sequence[Path]) -> list[Path]:
+    """Expands wildcards and folders, keeping order and dropping repeats.
+
+    Windows shells pass `*.pdf` to the program literally (unlike bash), so without this
+    `cepxico *.pdf` would report a missing file named "*.pdf". A folder means every
+    receipt directly inside it. A pattern matching nothing is kept, to be reported."""
+    paths: list[Path] = []
+    for arg in args:
+        if arg.is_dir():
+            paths += sorted(
+                p for p in arg.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
+            )
+        elif not arg.exists() and any(ch in str(arg) for ch in "*?["):
+            paths += sorted(Path(m) for m in glob.glob(str(arg)) if Path(m).is_file()) or [arg]
+        else:
+            paths.append(arg)
+    seen: set[Path] = set()
+    unique = []
+    for path in paths:
+        key = path.resolve()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
 
 
 def configure_logging(verbose: bool) -> None:
@@ -86,7 +116,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run(cep_dir=args.out)
         return 0
 
-    results = [r for r in process_files(args.files, args.out, jobs=args.jobs) if r is not None]
+    results = [r for r in process_files(expand_paths(args.files), args.out, jobs=args.jobs) if r is not None]
 
     print_summary(results)
     return 0 if all(r.outcome is Outcome.SUCCESS for r in results) else 1

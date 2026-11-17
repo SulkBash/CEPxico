@@ -9,8 +9,7 @@ description = "Extracts SPEI transfer data from receipts and downloads the match
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "pdfplumber>=0.10",
-    "pymupdf>=1.23",
+    "pymupdf>=1.23",  # PDF text, and rendering scanned PDFs for OCR
     "pillow>=10.0",
     "rapidocr>=3.10,<4",  # OCR for scans and screenshots; ONNX Runtime, models bundled
     "requests>=2.31",

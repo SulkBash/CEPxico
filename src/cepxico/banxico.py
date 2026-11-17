@@ -25,6 +25,8 @@ from pathlib import Path
 from types import TracebackType
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 from cepxico.banks import Bank, BankCatalog
 
@@ -33,6 +35,18 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://www.banxico.org.mx/cep/"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) cep-client/2.0"
 REQUEST_TIMEOUT = 90  # valida.do can take >25 s when searching historical data
+MAX_CLAVE_LEN = 30
+# Connection failures and gateway errors are retried with backoff (1.5 s, 3 s). Every
+# request is a read-only query, so retrying the POST is safe too. Read timeouts aren't
+# retried: after 90 s, waiting another 90 s rarely helps.
+RETRY = Retry(
+    total=2,
+    read=0,
+    backoff_factor=1.5,
+    status_forcelist=(502, 503, 504),
+    allowed_methods=None,
+    raise_on_status=False,
+)
 _XHR = {"X-Requested-With": "XMLHttpRequest"}
 
 
@@ -74,11 +88,15 @@ class CatalogCache:
 
     def __init__(self) -> None:
         self._catalogs: dict[str, BankCatalog] = {}
+        self._date_locks: dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
 
     def get(self, fecha: str, load: Callable[[], BankCatalog]) -> BankCatalog:
-        # Held while loading, so concurrent receipts for one date fetch the catalog once.
+        # One lock per date: concurrent receipts for one date fetch its catalog once,
+        # while receipts for other dates load theirs in parallel.
         with self._lock:
+            date_lock = self._date_locks.setdefault(fecha, threading.Lock())
+        with date_lock:
             if fecha not in self._catalogs:
                 self._catalogs[fecha] = load()
             return self._catalogs[fecha]
@@ -101,6 +119,9 @@ class BanxicoCEPClient:
         self.base_url = base_url
         self.timeout = timeout
         self.session = requests.Session()
+        adapter = HTTPAdapter(max_retries=RETRY)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self.session.headers.update(
             {"User-Agent": USER_AGENT, "Referer": base_url, "Accept-Language": "es-MX,es;q=0.9"}
         )
@@ -125,6 +146,11 @@ class BanxicoCEPClient:
         if not self._started:
             self.session.get(self.base_url, timeout=self.timeout).raise_for_status()
             self._started = True
+
+    def _new_session(self) -> None:
+        self.session.cookies.clear()
+        self._started = False
+        self._start()
 
     def get_catalog(self, fecha: str) -> BankCatalog:
         """Banks participating in SPEI on `fecha` (dd-mm-yyyy). Raises BanxicoError."""
@@ -166,7 +192,7 @@ class BanxicoCEPClient:
 
         if not re.fullmatch(r"\d{2}-\d{2}-\d{4}", fecha or ""):
             return CEPResult(CEPStatus.INPUT_ERROR, f"Invalid date '{fecha}' (expected dd-mm-yyyy)")
-        if not 0 < len(clave) <= 30:
+        if not 0 < len(clave) <= MAX_CLAVE_LEN:
             return CEPResult(CEPStatus.INPUT_ERROR, f"Invalid clave de rastreo '{clave_rastreo}'")
         if not 0 < len(account) <= 18:
             return CEPResult(CEPStatus.INPUT_ERROR, f"Invalid beneficiary account '{account}'")
@@ -193,6 +219,15 @@ class BanxicoCEPClient:
             "captcha": "c",  # what the official page sends while the captcha is disabled
             "tipoConsulta": "1",  # 1 = download CEP, 0 = only check payment status
         }
+
+        # Every lookup gets a new Banxico session. descarga.do serves the session's last
+        # CEP, so on a reused session a lookup Banxico rejects could still download the
+        # previous receipt's CEP and report a fake receipt as real. One extra GET is a
+        # small price for ruling that out whatever Banxico does with rejected lookups.
+        try:
+            self._new_session()
+        except requests.RequestException as e:
+            return CEPResult(CEPStatus.ERROR, f"Could not reach Banxico: {e}")
 
         try:
             resp = self.session.post(

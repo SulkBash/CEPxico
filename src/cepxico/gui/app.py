@@ -18,8 +18,10 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageGrab
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
-from cepxico.extraction import SUPPORTED_EXTENSIONS
+from cepxico.extraction import SUPPORTED_EXTENSIONS, correct_payment
 from cepxico.gui import theme
+from cepxico.gui.fields_dialog import FieldsDialog
+from cepxico.models import FIELD_LABELS, PaymentData
 from cepxico.pipeline import FileResult, Outcome
 from cepxico.pipeline import process_files as run_batch
 
@@ -44,6 +46,7 @@ OUTCOME_STATUS = {
     Outcome.NOT_FOUND: ItemStatus.NOT_FOUND,
     Outcome.FAILED: ItemStatus.FAILED,
 }
+FINISHED_STATUSES = frozenset(OUTCOME_STATUS.values())
 
 UI_POLL_MS = 50  # how often the Tk thread applies updates posted by the worker
 BUSY_TITLE = "Processing"
@@ -62,6 +65,30 @@ class QueueItem:
     status: ItemStatus = ItemStatus.PENDING
     result_text: str = "Ready"
     result: FileResult | None = None
+    corrected: PaymentData | None = None  # fields the user typed in; used instead of re-reading
+
+
+def can_edit(item: QueueItem) -> bool:
+    """Fields can be typed in for receipts that failed or weren't found at Banxico, and
+    edited again until they're checked."""
+    if item.status in (ItemStatus.FAILED, ItemStatus.NOT_FOUND):
+        return True
+    return item.corrected is not None and item.status in (ItemStatus.PENDING, ItemStatus.CANCELLED)
+
+
+def is_confirmed(item: QueueItem) -> bool:
+    """Whether Banxico already confirmed this receipt and its CEP is still on disk.
+
+    Process Files skips confirmed receipts: checking one again can't change the answer,
+    only load Banxico and risk showing a real transfer as Failed after a network error.
+    A receipt whose CEP file was deleted is checked again, which downloads it anew."""
+    cep = item.result.cep if item.result else None
+    return (
+        item.status is ItemStatus.SUCCESS
+        and cep is not None
+        and cep.pdf_path is not None
+        and cep.pdf_path.is_file()
+    )
 
 
 class CEPApp(TkinterDnD.Tk):
@@ -72,7 +99,9 @@ class CEPApp(TkinterDnD.Tk):
         self._path_by_tree_id: dict[str, str] = {}
         self._temp_files: list[str] = []  # pasted clipboard images, deleted on exit
         self.processing = False
-        self.processed_count = 0
+        self.processed_count = 0  # files finished in the current/last batch
+        self._batch_size = 0  # files sent to the current/last batch
+        self._skipped_confirmed = 0  # confirmed files the current/last batch left alone
         self._cancel = threading.Event()
         self._ui_queue: queue.Queue[tuple[Callable[..., object], tuple[object, ...]]] = queue.Queue()
 
@@ -145,6 +174,7 @@ class CEPApp(TkinterDnD.Tk):
         bar.pack(fill=tk.X, pady=(0, 10))
         theme.make_button(bar, "Add Files", self.add_files).pack(side=tk.LEFT, padx=5)
         theme.make_button(bar, "Remove Selected", self.remove_selected).pack(side=tk.LEFT, padx=5)
+        theme.make_button(bar, "Edit Fields", self.edit_selected).pack(side=tk.LEFT, padx=5)
         theme.make_button(bar, "Clear All", self.clear_files, variant="danger").pack(side=tk.LEFT, padx=5)
         theme.make_button(bar, "Open CEP Folder", self.open_cep_folder).pack(side=tk.LEFT, padx=5)
         self.process_button = theme.make_button(bar, "Process Files", self.process_files, variant="primary")
@@ -189,6 +219,7 @@ class CEPApp(TkinterDnD.Tk):
         tree.drop_target_register(DND_FILES)
         tree.dnd_bind("<<Drop>>", self.on_drop)
         tree.bind("<<TreeviewSelect>>", lambda _e: self._show_selected_details())
+        tree.bind("<Double-1>", lambda _e: self.edit_selected())
         self.tree = tree
 
     def _build_side_panel(self, workspace: ttk.Panedwindow) -> None:
@@ -314,6 +345,75 @@ class CEPApp(TkinterDnD.Tk):
         self.cep_dir.mkdir(parents=True, exist_ok=True)
         os.startfile(self.cep_dir)  # noqa: S606 - Windows-only app
 
+    # ------------------------------------------------------------------ typing in fields
+
+    def _selected_item(self) -> QueueItem | None:
+        selection = self.tree.selection()
+        return self.items.get(self._path_by_tree_id.get(selection[0], "")) if selection else None
+
+    def edit_selected(self) -> None:
+        if self._refuse_if_busy():
+            return
+        item = self._selected_item()
+        if not item:
+            messagebox.showinfo("Edit Fields", "Select a file first.")
+            return
+        if not can_edit(item):
+            messagebox.showinfo(
+                "Edit Fields", "Fields can be edited for files that failed or weren't found at Banxico."
+            )
+            return
+
+        def open_receipt() -> None:
+            try:
+                os.startfile(item.path)  # noqa: S606 - Windows-only app
+            except OSError as e:
+                messagebox.showerror("Open Receipt", f"Couldn't open the file: {e}")
+
+        FieldsDialog(
+            self,
+            filename=os.path.basename(item.path),
+            initial=self._initial_values(item),
+            on_save=lambda values, check_now: self.save_corrections(item.path, values, check_now),
+            on_open_receipt=open_receipt,
+        )
+
+    @staticmethod
+    def _current_payment(item: QueueItem) -> PaymentData:
+        """The latest data for a receipt: the user's corrections, else what was read."""
+        if item.corrected:
+            return item.corrected
+        if item.result and item.result.payment:
+            return item.result.payment
+        return PaymentData(source_file=os.path.basename(item.path))
+
+    def _initial_values(self, item: QueueItem) -> dict[str, str]:
+        payment = self._current_payment(item)
+        values = {name: getattr(payment, name) or "" for name in FIELD_LABELS}
+        # Show the banks the app identified when the receipt doesn't name them.
+        result = item.result
+        if result and result.sender and not values["sender_bank"]:
+            values["sender_bank"] = result.sender.bank.name
+        if result and result.receiver and not values["receiver_bank"]:
+            values["receiver_bank"] = result.receiver.bank.name
+        return values
+
+    def save_corrections(self, path: str, values: dict[str, str], check_now: bool) -> dict[str, str]:
+        """Applies the fields typed for `path`; checks it at Banxico if `check_now`.
+        Returns {field: problem} for invalid values, and then changes nothing."""
+        item = self.items.get(path)
+        if not item or self.processing:
+            return {}
+        corrected, errors = correct_payment(self._current_payment(item), values)
+        if errors:
+            return errors
+        if values:
+            item.corrected = corrected
+            self._set_status(path, ItemStatus.PENDING, "Edited, ready to check")
+        if check_now:
+            self._start_batch([item])
+        return {}
+
     # ------------------------------------------------------------------ display
 
     def _set_details(self, content: str) -> None:
@@ -323,14 +423,13 @@ class CEPApp(TkinterDnD.Tk):
         self.details_text.configure(state=tk.DISABLED)
 
     def _show_selected_details(self) -> None:
-        selection = self.tree.selection()
-        item = self.items.get(self._path_by_tree_id.get(selection[0], "")) if selection else None
+        item = self._selected_item()
         if not item:
             self._set_details(NO_SELECTION_TEXT)
             return
 
         result = item.result
-        payment = result.payment if result else None
+        payment = item.corrected or (result.payment if result else None)
 
         def show(value: object) -> str:
             return str(value) if value else "N/A"
@@ -350,6 +449,11 @@ class CEPApp(TkinterDnD.Tk):
             f"Receptor: {show(result and result.receiver)}",
             f"CEP file: {show(result and result.cep and result.cep.pdf_path)}",
         ]
+        if payment and payment.edited_fields:
+            typed = ", ".join(FIELD_LABELS[name] for name in payment.edited_fields)
+            lines += ["", f"Typed by user: {typed}"]
+        if can_edit(item):
+            lines += ["", "Double-click the file (or Edit Fields) to correct or fill in fields."]
         self._set_details("\n".join(lines))
 
     def _set_status(self, path: str, status: ItemStatus, text: str) -> None:
@@ -367,7 +471,9 @@ class CEPApp(TkinterDnD.Tk):
 
     def _refresh_counters(self) -> None:
         total = len(self.items)
-        done = min(self.processed_count, total)
+        # Files with a result, whether from this batch or an earlier one (confirmed files
+        # a batch skips count as done).
+        done = sum(1 for item in self.items.values() if item.status in FINISHED_STATUSES)
         self.progress.configure(maximum=max(total, 1), value=done)
         self.progress_label_var.set(f"{done} / {total}")
         self.stat_vars["loaded"].set(str(total))
@@ -385,18 +491,35 @@ class CEPApp(TkinterDnD.Tk):
         if not self.items:
             messagebox.showwarning("No Files", "No files to process.")
             return
+        to_check = [item for item in self.items.values() if not is_confirmed(item)]
+        if not to_check:
+            messagebox.showinfo(
+                "Nothing to Check",
+                "Every file is already confirmed at Banxico.\n\n"
+                "To check a file again, remove it and add it back.",
+            )
+            return
+        self._start_batch(to_check)
 
+    def _start_batch(self, to_check: list[QueueItem]) -> None:
         self.processing = True
         self._cancel.clear()
         self.processed_count = 0
+        self._batch_size = len(to_check)
+        in_batch = {item.path for item in to_check}
+        self._skipped_confirmed = sum(
+            1 for item in self.items.values() if item.path not in in_batch and is_confirmed(item)
+        )
         self.status_var.set("Processing files...")
         self.process_button.configure(state=tk.DISABLED)
         self.cancel_button.configure(state=tk.NORMAL)
-        for item in self.items.values():
+        for item in to_check:
             item.result = None
             self._set_status(item.path, ItemStatus.PENDING, "Queued")
 
-        threading.Thread(target=self._worker, args=(list(self.items),), daemon=True).start()
+        paths = [item.path for item in to_check]
+        payments = {item.path: item.corrected for item in to_check if item.corrected}
+        threading.Thread(target=self._worker, args=(paths, payments), daemon=True).start()
 
     def cancel_processing(self) -> None:
         if self.processing:
@@ -404,7 +527,7 @@ class CEPApp(TkinterDnD.Tk):
             self.status_var.set("Cancel requested. Stopping after the files in progress...")
             self.cancel_button.configure(state=tk.DISABLED)
 
-    def _worker(self, paths: list[str]) -> None:
+    def _worker(self, paths: list[str], payments: dict[str, PaymentData]) -> None:
         """Runs in a background thread. It never touches Tk directly: UI updates go
         through self._ui_queue and are applied on the Tk thread by _drain_ui_queue()."""
         post = self._post_to_ui
@@ -416,7 +539,9 @@ class CEPApp(TkinterDnD.Tk):
             post(self._on_file_done, path, result)
 
         try:
-            results = run_batch(paths, self.cep_dir, on_step=on_step, on_done=on_done, cancel=self._cancel)
+            results = run_batch(
+                paths, self.cep_dir, on_step=on_step, on_done=on_done, cancel=self._cancel, payments=payments
+            )
             skipped = [path for path, result in zip(paths, results, strict=True) if result is None]
             if skipped:
                 post(self._mark_cancelled, skipped)
@@ -443,8 +568,11 @@ class CEPApp(TkinterDnD.Tk):
         if item:
             item.result = result
         self.processed_count += 1
-        self._set_status(path, OUTCOME_STATUS[result.outcome], result.message)
-        self.status_var.set(f"Processed {self.processed_count}/{len(self.items)}: {os.path.basename(path)}")
+        message = result.message
+        if result.payment and result.payment.edited_fields:
+            message += "  [edited]"  # checked with fields the user typed in
+        self._set_status(path, OUTCOME_STATUS[result.outcome], message)
+        self.status_var.set(f"Processed {self.processed_count}/{self._batch_size}: {os.path.basename(path)}")
 
     def _mark_cancelled(self, paths: list[str]) -> None:
         for path in paths:
@@ -473,8 +601,10 @@ class CEPApp(TkinterDnD.Tk):
             "",
             f"Total files loaded: {len(self.items)}",
             f"Processed: {self.processed_count}",
-            f"CEP found and saved: {len(found)}",
         ]
+        if self._skipped_confirmed:
+            lines.append(f"Already confirmed, not checked again: {self._skipped_confirmed}")
+        lines.append(f"CEP found and saved: {len(found)}")
         if skipped:
             lines.append(f"Cancelled: {len(skipped)}")
         if found:

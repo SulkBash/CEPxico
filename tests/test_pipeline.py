@@ -142,6 +142,58 @@ def test_unexpected_error_becomes_failure(receipt, monkeypatch):
     assert result.outcome is Outcome.FAILED and "kaput" in result.message
 
 
+def no_extraction(monkeypatch):
+    def fail(_path):
+        raise AssertionError("the file shouldn't be read again")
+
+    monkeypatch.setattr(pipeline, "extract_payment", fail)
+
+
+def test_corrected_payment_is_used_without_reading_the_file(receipt, monkeypatch):
+    no_extraction(monkeypatch)
+    corrected = PaymentData(**{**COMPLETE.__dict__, "amount": "318940.25", "edited_fields": ("amount",)})
+    client = FakeClient(CEPResult(CEPStatus.FOUND, "ok", pdf_path=receipt))
+
+    result = process_file(receipt, client, payment=corrected)
+
+    assert result.outcome is Outcome.SUCCESS
+    assert result.payment is corrected
+    assert client.calls[0]["amount"] == "318940.25"
+
+
+def test_typed_sender_must_be_in_banxicos_list(receipt, monkeypatch):
+    # The receipt names Banorte, but the user typed a bank that doesn't exist: report it
+    # rather than fall back to the bank named on the receipt.
+    no_extraction(monkeypatch)
+    typed = PaymentData(
+        **{
+            **COMPLETE.__dict__,
+            "sender_bank": "Banco Inexistente",
+            "text": "Banorte",
+            "edited_fields": ("sender_bank",),
+        }
+    )
+    client = FakeClient(CEPResult(CEPStatus.FOUND, "unused"))
+
+    result = process_file(receipt, client, payment=typed)
+
+    assert result.outcome is Outcome.FAILED
+    assert result.message == "Sending bank 'Banco Inexistente' not in Banxico's list"
+    assert client.calls == []
+
+
+def test_typed_sender_is_used(receipt, monkeypatch):
+    no_extraction(monkeypatch)
+    typed = PaymentData(**{**COMPLETE.__dict__, "sender_bank": "banorte", "edited_fields": ("sender_bank",)})
+    client = FakeClient(CEPResult(CEPStatus.FOUND, "ok", pdf_path=receipt))
+
+    result = process_file(receipt, client, payment=typed)
+
+    assert result.outcome is Outcome.SUCCESS
+    assert result.sender.bank.code3 == "072"
+    assert result.sender.source is BankSource.LABEL
+
+
 def test_cli_exit_code_and_summary(tmp_path, capsys):
     exit_code = main([str(tmp_path / "missing.pdf"), "--out", str(tmp_path)])
     assert exit_code == 1
@@ -216,9 +268,33 @@ class TestProcessFiles:
         results, clients, _ = self.run([], extracted)
         assert results == [] and clients == []
 
+    def test_corrected_payments_by_path(self, tmp_path, extracted):
+        typed, read = str(tmp_path / "typed.pdf"), str(tmp_path / "read.pdf")
+        for p in (typed, read):
+            Path(p).write_bytes(b"%PDF")
+        corrected = PaymentData(**{**COMPLETE.__dict__, "amount": "99.00", "edited_fields": ("amount",)})
+
+        results, _, _ = self.run([typed, read], extracted, payments={typed: corrected})
+
+        assert results[0].payment is corrected
+        assert results[1].payment is COMPLETE
+
 
 @pytest.mark.parametrize("value", ["0", "9", "two"])
 def test_cli_rejects_bad_jobs(value, capsys):
     with pytest.raises(SystemExit):
         main(["r.pdf", "--jobs", value])
     assert "--jobs" in capsys.readouterr().err
+
+
+def test_cli_expands_wildcards_and_folders(tmp_path):
+    from cepxico.cli import expand_paths
+
+    for name in ("b.pdf", "a.PNG", "notes.txt"):
+        (tmp_path / name).write_bytes(b"x")
+    a, b = tmp_path / "a.PNG", tmp_path / "b.pdf"
+
+    assert expand_paths([tmp_path / "*.pdf"]) == [b]  # Windows shells don't expand it
+    assert expand_paths([tmp_path]) == [a, b]  # receipts in the folder, not notes.txt
+    assert expand_paths([b, tmp_path / "*.pdf"]) == [b]  # no repeats
+    assert expand_paths([tmp_path / "*.jpg"]) == [tmp_path / "*.jpg"]  # reported as missing

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from cepxico.banks import clabe_is_valid
 
-# Label shown to users for each field.
+# Label shown to users for each field, in display order.
 FIELD_LABELS = {
     "payment_date": "fecha de pago",
     "tracking_key": "clave de rastreo",
@@ -34,6 +34,7 @@ class PaymentData:
     amount: str | None = None  # e.g. "1234.50"
     error_reason: str = ""
     text: str = field(default="", repr=False, compare=False)  # full receipt text
+    edited_fields: tuple[str, ...] = ()  # fields the user typed in, not read from the receipt
 
     def missing_fields(self) -> list[str]:
         """Required fields still missing. The receiving bank isn't needed when the

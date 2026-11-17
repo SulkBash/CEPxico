@@ -46,6 +46,16 @@ class TestSender:
         match = identify_sender(p, directory, receiver=Bank("90646", "STP"))
         assert match.bank == BANORTE and match.source is BankSource.SIGNATURE
 
+    def test_banorte_business_receipt_footer(self, directory):
+        # Banorte's "Recibo de Operación" names no bank in its text, only the receiving one.
+        p = payment(
+            "Operación: Transferencia a Otros Bancos Nacionales - SPEI\n"
+            "Banco Destino: KUSPIT\n"
+            "Para el caso de aclaración ... en los números; 800 DIRECTA (347 3282) | Ciudad de México"
+        )
+        match = identify_sender(p, directory, receiver=Bank("90653", "KUSPIT"))
+        assert match.bank == BANORTE and match.source is BankSource.SIGNATURE
+
     def test_receiver_is_never_the_sender(self, directory):
         """The v1 bug: a transfer *to* BBVA was reported as *from* BBVA."""
         p = payment("BANORTE\nBanco Destino: BBVA MEXICO", receiver_bank="BBVA MEXICO")
