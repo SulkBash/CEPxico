@@ -3,26 +3,35 @@ from pathlib import Path
 import pytest
 
 from cepxico import pipeline
-from cepxico.banxico import CEPResult, CEPStatus
+from cepxico.banks import Bank, BankCatalog
+from cepxico.banxico import BanxicoError, CEPResult, CEPStatus
 from cepxico.cli import main
+from cepxico.identify import BankSource
 from cepxico.models import PaymentData
 from cepxico.pipeline import Outcome, process_file
+from tests.conftest import load_catalog, with_check_digit
 
 COMPLETE = PaymentData(
     source_file="r.pdf",
     payment_date="05-11-2026",
     tracking_key="MBAN01002611050012345678",
     sender_bank="Banorte",
-    receiver_bank="BBVA MEXICO",
-    beneficiary_account="012180001234567893",
+    receiver_bank=None,  # comes from the CLABE
+    beneficiary_account=with_check_digit("01218000123456789"),
     amount="10.00",
 )
 
 
 class FakeClient:
-    def __init__(self, result: CEPResult):
+    def __init__(self, result: CEPResult, catalog: BankCatalog | Exception | None = None):
         self.result = result
+        self.catalog = catalog if catalog is not None else load_catalog("2026-11-10")
         self.calls: list[dict] = []
+
+    def get_catalog(self, _fecha):
+        if isinstance(self.catalog, Exception):
+            raise self.catalog
+        return self.catalog
 
     def download_cep(self, **query):
         self.calls.append(query)
@@ -66,8 +75,31 @@ def test_outcomes(receipt, extracted, cep, outcome, message_start):
 
     assert result.outcome is outcome
     assert result.message.startswith(message_start)
-    assert steps == ["Extracting", "Checking at Banxico"]
-    assert client.calls[0]["sender_name"] == "Banorte"
+    assert steps == ["Extracting", "Identifying banks", "Checking at Banxico"]
+    assert client.calls[0]["sender"] == Bank("40072", "BANORTE")
+    assert client.calls[0]["receiver"] == Bank("40012", "BBVA MEXICO")
+    assert result.sender.source is BankSource.LABEL
+    assert result.receiver.source is BankSource.CLABE
+
+
+def test_unidentified_sender_skips_banxico(receipt, extracted):
+    extracted(PaymentData(**{**COMPLETE.__dict__, "sender_bank": None, "text": "nothing"}))
+    client = FakeClient(CEPResult(CEPStatus.FOUND, "unused"))
+
+    result = process_file(receipt, client)
+
+    assert result.outcome is Outcome.FAILED
+    assert result.message == "Couldn't identify the sending bank"
+    assert client.calls == []
+
+
+def test_catalog_unavailable(receipt, extracted):
+    extracted(COMPLETE)
+    client = FakeClient(CEPResult(CEPStatus.FOUND, "unused"), catalog=BanxicoError("Banxico down"))
+
+    result = process_file(receipt, client)
+
+    assert result.outcome is Outcome.FAILED and result.message == "Banxico down"
 
 
 def test_missing_data_skips_banxico(receipt, extracted):

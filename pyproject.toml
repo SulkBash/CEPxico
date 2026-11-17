@@ -7,7 +7,7 @@ name = "cepxico"
 version = "2.0.0"
 description = "Extracts SPEI transfer data from receipts and downloads the matching CEP from Banxico."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "pdfplumber>=0.10",
     "pymupdf>=1.23",
@@ -30,13 +30,16 @@ cepxico-gui = "cepxico.gui:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+cepxico = ["data/*.toml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
 
 [tool.ruff]
 line-length = 110
-target-version = "py310"
+target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]

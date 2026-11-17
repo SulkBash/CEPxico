@@ -329,8 +329,8 @@ class CEPApp(TkinterDnD.Tk):
             self._set_details(NO_SELECTION_TEXT)
             return
 
-        payment = item.result.payment if item.result else None
-        cep = item.result.cep if item.result else None
+        result = item.result
+        payment = result.payment if result else None
 
         def show(value: object) -> str:
             return str(value) if value else "N/A"
@@ -342,14 +342,13 @@ class CEPApp(TkinterDnD.Tk):
             "",
             f"Fecha: {show(payment and payment.payment_date)}",
             f"Rastreo: {show(payment and payment.tracking_key)}",
-            f"Emisor: {show(payment and payment.sender_bank)}",
-            f"Receptor: {show(payment and payment.receiver_bank)}",
             f"Cuenta: {show(payment and payment.beneficiary_account)}",
             f"Monto: {show(payment and payment.amount)}",
             "",
-            f"Banxico emisor: {show(cep and cep.sender and cep.sender.name)}",
-            f"Banxico receptor: {show(cep and cep.receiver and cep.receiver.name)}",
-            f"CEP file: {show(cep and cep.pdf_path)}",
+            # Bank as identified in Banxico's catalog, and how it was identified.
+            f"Emisor: {show(result and result.sender)}",
+            f"Receptor: {show(result and result.receiver)}",
+            f"CEP file: {show(result and result.cep and result.cep.pdf_path)}",
         ]
         self._set_details("\n".join(lines))
 

@@ -1,0 +1,373 @@
+# Bank reference data that Banxico's CEP catalog doesn't provide.
+#
+# KEYS are 3-digit CLABE bank codes: the first 3 digits of a CLABE and the last 3
+# digits of Banxico's participant code (BBVA: CLABE 012..., Banxico code 40012).
+# They survive renames and re-licensing, unlike names or full codes:
+#   90638 "NU MEXICO" (SOFIPO)  ->  40638 "NUBANK" (bank, 2026)
+#
+# NAMES. Banxico's catalog for the payment date already supplies each bank's short
+# name (e.g. "BBVA BANCOMER" before 2022, "BBVA MEXICO" after), and it is always
+# matched. List here only the other ways a receipt may write the bank:
+#   legal_name          razón social; its part before the first comma / " S.A." is
+#                       matched too ("Banco Mercantil del Norte")
+#   aliases             brands, former names, common spellings
+#   ambiguous_names     names that are also ordinary words or appear on unrelated
+#                       receipts (footers, merchants). Still used for labelled fields
+#                       ("Banco destino: ..."), never when scanning a whole receipt.
+#
+# CLUES for identifying the *sending* bank when the receipt has no sender label:
+#   tracking_key_prefixes   claves de rastreo this bank generates start with these
+#   receipt_signatures      wording that appears only on this bank's own receipts
+# Only add clues confirmed on real receipts, with a note saying so.
+#
+# SOURCES
+#   Short names: https://www.banxico.org.mx/cep/instituciones.do, catalogs sampled
+#     2015-07 .. 2026-11 (142 codes over time, 97 current, 23 renamed).
+#   Legal names: Banxico, "Participantes directos en el SPEI", updated 2026-09-23:
+#     https://www.banxico.org.mx/servicios/d/%7BC24C7DBC-9ABF-6F41-DA38-561CEB1401B3%7D.pdf
+
+# ------------------------------------------------------------------ Banca múltiple
+
+["002"]  # BANAMEX
+legal_name = "Banco Nacional de México, S.A., Integrante del Grupo Financiero Banamex"
+aliases = ["Citibanamex", "Citi Banamex"]
+
+["012"]  # BBVA MEXICO (catalog: "BBVA BANCOMER" until 2021)
+legal_name = "BBVA México, S.A., Institución de Banca Múltiple, Grupo Financiero BBVA México"
+aliases = ["BBVA", "Bancomer", "BBVA Bancomer"]
+tracking_key_prefixes = ["BNET"]  # BBVA Net Cash; inherited from v1 parser
+
+["014"]  # SANTANDER
+legal_name = "Banco Santander (México), S.A., Institución de Banca Múltiple, Grupo Financiero Santander México"
+# Inherited from v1 parser, unverified: other banks may use this wording too.
+receipt_signatures = ["Comprobante de Operación"]
+
+["021"]  # HSBC
+legal_name = "HSBC México, S.A., Institución de Banca Múltiple, Grupo Financiero HSBC"
+
+["030"]  # BAJIO
+legal_name = "Banco del Bajío, S.A., Institución de Banca Múltiple"
+
+["036"]  # INBURSA
+legal_name = "Banco Inbursa, S.A., Institución de Banca Múltiple, Grupo Financiero Inbursa"
+
+["042"]  # MIFEL
+legal_name = "Banca Mifel, S.A., Institución de Banca Múltiple, Grupo Financiero Mifel"
+
+["044"]  # SCOTIABANK
+legal_name = "Scotiabank Inverlat, S.A., Institución de Banca Múltiple, Grupo Financiero Scotiabank Inverlat"
+
+["058"]  # BANREGIO
+legal_name = "Banco Regional, S.A., Institución de Banca Múltiple, Banregio Grupo Financiero"
+
+["059"]  # INVEX
+legal_name = "Banco Invex, S.A., Institución de Banca Múltiple, Invex Grupo Financiero"
+
+["060"]  # BANSI
+legal_name = "Bansi, S.A., Institución de Banca Múltiple"
+
+["062"]  # AFIRME
+legal_name = "Banca Afirme, S.A., Institución de Banca Múltiple, Afirme Grupo Financiero"
+
+["072"]  # BANORTE (catalog: "BANORTE/IXE" until 2019)
+legal_name = "Banco Mercantil del Norte, S.A., Institución de Banca Múltiple, Grupo Financiero Banorte"
+aliases = ["IXE"]
+receipt_signatures = ["Banco Mercantil del Norte"]  # inherited from v1 parser
+
+["106"]  # BANK OF AMERICA (catalog: "BAMSA" until 2017)
+legal_name = "Bank of America México, S.A., Institución de Banca Múltiple"
+
+["108"]  # MUFG (catalog: "TOKYO" until 2017)
+legal_name = "MUFG Bank México, S.A., Institución de Banca Múltiple Filial"
+
+["110"]  # JP MORGAN
+legal_name = "Banco J.P. Morgan, S.A., Institución de Banca Múltiple, J.P. Morgan Grupo Financiero"
+aliases = ["J.P. Morgan"]
+
+["112"]  # BMONEX
+legal_name = "Banco Monex, S.A., Institución de Banca Múltiple, Monex Grupo Financiero"
+
+["113"]  # VE POR MAS
+legal_name = "Banco Ve por Más, S.A., Institución de Banca Múltiple, Grupo Financiero Ve por Más"
+
+["124"]  # CITI MEXICO (code was "DEUTSCHE", then "CBM BANCO")
+legal_name = "Banco Citi México, S.A., Institución de Banca Múltiple, Grupo Financiero Citi México"
+
+["127"]  # AZTECA
+legal_name = "Banco Azteca, S.A., Institución de Banca Múltiple"
+
+["128"]  # KAPITAL (catalog: "AUTOFIN" until 2025)
+legal_name = "KPTL México Bank, S.A., Institución de Banca Múltiple, Kapital México Grupo Financiero"
+aliases = ["Kapital Bank", "Autofin"]
+
+["129"]  # BARCLAYS
+legal_name = "Barclays Bank México, S.A., Institución de Banca Multiple, Grupo Financiero Barclays México"
+
+["130"]  # COMPARTAMOS
+legal_name = "Banco Compartamos, S.A., Institución de Banca Múltiple"
+ambiguous_names = ["COMPARTAMOS"]  # Spanish verb
+
+["132"]  # MULTIVA BANCO (catalog: "BMULTIVA" until 2015)
+legal_name = "Banco Multiva, S.A., Institución de Banca Múltiple, Grupo Financiero Multiva"
+aliases = ["Multiva"]
+
+["136"]  # INTERCAM BANCO (catalog: "INTERBANCO" until 2015)
+legal_name = "Intercam Banco, S.A., Institución de Banca Múltiple"
+aliases = ["Intercam"]
+
+["133"]  # ACTINVER
+legal_name = "Banco Actinver, S.A., Institución de Banca Múltiple, Grupo Financiero Actinver"
+
+["137"]  # BANCOPPEL
+legal_name = "BanCoppel, S.A., Institución de Banca Múltiple"
+aliases = ["Banco Coppel", "Coppel"]
+ambiguous_names = ["Coppel"]  # also a store that appears as a payment concept
+
+["138"]  # UALA (catalog: "ABC CAPITAL" until 2025)
+legal_name = "Ualá, S.A. Institución de Banca Múltiple"
+aliases = ["ABC Capital"]
+
+["140"]  # CONSUBANCO
+legal_name = "Consubanco, S.A., Institución de Banca Múltiple"
+
+["141"]  # VOLKSWAGEN
+legal_name = "Volkswagen Bank, S.A., Institución de Banca Múltiple"
+ambiguous_names = ["VOLKSWAGEN"]  # car payments mention the brand
+
+["145"]  # BBASE
+legal_name = "Banco Base, S.A., Institución de Banca Múltiple, Grupo Financiero Base"
+
+["147"]  # BANKAOOL
+legal_name = "Bankaool, S.A., Institución de Banca Múltiple"
+
+["148"]  # PAGATODO
+legal_name = "Banco PagaTodo, S.A., Institución de Banca Múltiple"
+
+["150"]  # INMOBILIARIO
+legal_name = "Banco Inmobiliario Mexicano, S.A., Institución de Banca Múltiple"
+ambiguous_names = ["INMOBILIARIO"]  # ordinary word
+
+["151"]  # DONDE
+legal_name = "Fundación Dondé Banco, S.A., Institución de Banca Múltiple"
+aliases = ["Dondé Banco"]
+ambiguous_names = ["DONDE"]  # "where"
+
+["152"]  # BANCREA
+legal_name = "Banco Bancrea, S.A., Institución de Banca Múltiple"
+
+["154"]  # BANCO COVALTO (catalog: "BANCO FINTERRA" until 2022)
+legal_name = "Banco Covalto, S.A., Institución de Banca Múltiple"
+aliases = ["Finterra"]
+
+["155"]  # ICBC
+legal_name = "Industrial and Commercial Bank of China México, S.A., Institución de Banca Múltiple"
+
+["156"]  # SABADELL
+legal_name = "Banco Sabadell, S.A., Institución de Banca Múltiple"
+
+["157"]  # SHINHAN
+legal_name = "Banco Shinhan de México, S.A., Institución de Banca Múltiple"
+
+["158"]  # MIZUHO BANK
+legal_name = "Mizuho Bank México, S.A., Institución de Banca Múltiple"
+
+["159"]  # BANK OF CHINA
+legal_name = "Bank of China México, S.A., Institución de Banca Múltiple"
+
+["160"]  # BANCO S3
+legal_name = "Banco S3 Caceis México, S.A., Institución de Banca Múltiple"
+
+["167"]  # HEY BANCO
+legal_name = "Hey Banco, S.A. Institución de Banca Múltiple, Banregio Grupo Financiero"
+
+["170"]  # REVOLUT BANK
+legal_name = "Revolut Bank, S.A., Institución de Banca Múltiple"
+aliases = ["Revolut"]
+
+["638"]  # NUBANK (was 90638 "NU MEXICO" until 2026; same CLABE prefix)
+legal_name = "Nubank, S.A., Institución de Banca Múltiple"
+aliases = ["Nu México", "Nu Bank"]
+
+# ------------------------------------------------------------------ Banca de desarrollo
+
+["006"]  # BANCOMEXT
+legal_name = "Banco Nacional de Comercio Exterior, S.N.C."
+
+["009"]  # BANOBRAS
+legal_name = "Banco Nacional de Obras y Servicios Públicos, S.N.C."
+
+["019"]  # BANJERCITO
+legal_name = "Banco Nacional del Ejército, Fuerza Aérea y la Armada, S.N.C."
+
+["135"]  # NAFIN
+legal_name = "Nacional Financiera, S.N.C."
+
+["166"]  # BaBien (catalog: "BANSEFI" until 2021)
+legal_name = "Banco del Bienestar, Sociedad Nacional de Crédito, Institución de Banca de Desarrollo"
+aliases = ["Bansefi"]
+
+["168"]  # HIPOTECARIA FED
+legal_name = "Sociedad Hipotecaria Federal, Sociedad Nacional de Crédito, Institución de Banca de Desarrollo"
+
+# ------------------------------------------------------------------ IFPE (fintech)
+
+["646"]  # STP
+legal_name = "Sistema de Transferencias y Pagos STP, S.A. de C.V., Institución de Fondos de Pago Electrónico"
+
+["706"]  # ARCUS FI (catalog: "ARCUS" until 2024)
+legal_name = "ARCUS F.I., S.A. de C.V., Institución de Fondos de Pago Electrónico"
+aliases = ["Arcus"]
+
+["710"]  # NVIO
+legal_name = "NVIO Pagos México, S.A.P.I. de C.V., Institución de Fondos de Pago Electrónico"
+
+["714"]  # PPBALANCEMX
+legal_name = "PayPal Payments México, S.A.P.I. de C.V., Institución de Fondos de Pago Electrónico"
+aliases = ["PayPal"]
+
+["715"]  # CASHI CUENTA (catalog: "Cartera Digital" in early 2025)
+legal_name = "Cartera Digital Wal-Mart, S.A. de C.V., Institución de Fondos de Pago Electrónico"
+aliases = ["Cashi", "Cartera Digital"]
+
+["720"]  # MexPago
+legal_name = "MexPago Transacciones, S.A.P.I. de C.V., Institución de Fondos de Pago Electrónico"
+
+["721"]  # albo
+legal_name = "Inteligencia en Finanzas, S.A.P.I. de C.V., Institución de Fondos de Pago Electrónico"
+
+["722"]  # Mercado Pago W
+legal_name = "MercadoLibre, S.A. de C.V., Institución de Fondos de Pago Electrónico"
+aliases = ["Mercado Pago"]
+ambiguous_names = ["MercadoLibre"]  # also a merchant in payment concepts
+
+["723"]  # Cuenca
+legal_name = "Cuenca Tecnología Financiera, S.A. de C.V., Institución de Fondos de Pago Electrónico"
+ambiguous_names = ["Cuenca"]  # also a city
+
+["728"]  # SPIN BY OXXO
+legal_name = "Compropago, S.A. de C.V., Institución de Fondos de Pago Electrónico"
+aliases = ["Spin"]
+ambiguous_names = ["Spin"]
+
+["729"]  # Dep y Pag Dig
+legal_name = "Depósitos y Pagos Digitales S.A.P.I. de C.V., Institución de Fondos de Pago Electrónico"
+
+["732"]  # Peibo
+legal_name = "Peibo Fintech, S.A.P.I. de C.V., Institución de Fondos de Pago Electrónico"
+
+["730"]  # Clip (catalog: "Swap" in mid 2026)
+legal_name = "Clip AI, S.A. de C.V., Institución de Fondos de Pago Electrónico"
+ambiguous_names = ["Clip"]  # ordinary word
+
+# ------------------------------------------------------------------ Casas de bolsa
+
+["600"]  # MONEXCB
+legal_name = "Monex Casa de Bolsa, S.A. de C.V."
+
+["601"]  # GBM
+legal_name = "Grupo Bursátil Mexicano, S.A. de C.V., Casa de Bolsa"
+
+["602"]  # MASARI
+legal_name = "Masari Casa de Bolsa, S.A."
+
+["605"]  # VALUE
+legal_name = "Value, S.A. de C.V., Casa de Bolsa, Value Grupo Financiero"
+ambiguous_names = ["VALUE"]  # ordinary word
+
+["616"]  # FINAMEX
+legal_name = "Casa de Bolsa Finamex, S.A.B. de C.V."
+
+["617"]  # VALMEX
+legal_name = "Valores Mexicanos Casa de Bolsa, S.A. de C.V."
+
+["631"]  # TRF (catalog: "CI BOLSA" until 2026)
+legal_name = "TRF Casa de Bolsa, S.A. de C.V."
+aliases = ["CI Bolsa"]
+
+["653"]  # KUSPIT
+legal_name = "Kuspit Casa de Bolsa, S.A. de C.V."
+
+["660"]  # Altor
+legal_name = "Altor Casa de Bolsa, S.A. de C.V."
+
+# ------------------------------------------------------------------ SOFIPO
+
+["634"]  # FINCOMUN
+legal_name = "Fincomún Servicios Financieros, S.A. de C.V., Sociedad Financiera Popular"
+
+["652"]  # CREDICAPITAL (catalog: "ASEA" until 2019)
+legal_name = "Solución Asea, S.A. de C.V., Sociedad Financiera Popular"
+
+["656"]  # UNAGRA
+legal_name = "Unagra, S.A. de C.V., Sociedad Financiera Popular"
+
+["659"]  # ASP INTEGRA OPC
+legal_name = "Opciones Empresariales del Noreste, S.A. de C.V., Sociedad Financiera Popular"
+
+["661"]  # KLAR
+legal_name = "KLAR TECHNOLOGIES, S.A. DE C.V., Sociedad Financiera Popular"
+
+["670"]  # LIBERTAD
+legal_name = "Libertad Servicios Financieros, S.A. de C.V., Sociedad Financiera Popular"
+ambiguous_names = ["LIBERTAD"]  # ordinary word, street names
+
+["688"]  # CREDICLUB
+legal_name = "Crediclub, S.A. de C.V., Sociedad Financiera Popular"
+
+["699"]  # FONDEADORA
+legal_name = "Fondea Technologies, S.A. de C.V., Sociedad Financiera Popular"
+
+# ------------------------------------------------------------------ Transmisores de dinero
+
+["703"]  # TESORED
+legal_name = "Cobre Technology, S.A. de C.V."
+
+["727"]  # TRANSFER DIRECT
+legal_name = "Transfer Directo México, S.A. de C.V."
+
+["734"]  # FINCO PAY
+legal_name = "FINCO PAY, S.A. de C.V."
+
+["738"]  # FINTOC
+legal_name = "FINTOC, S.A. de C.V."
+
+# ------------------------------------------------------------------ SOCAP
+
+["677"]  # CAJA POP MEXICA
+legal_name = "Caja Popular Mexicana, S.C. de A.P. de R.L. de C.V."
+
+["680"]  # CRISTOBAL COLON
+legal_name = "Caja Popular Cristóbal Colón, S.C. de R.L. de C.V."
+ambiguous_names = ["CRISTOBAL COLON"]  # street names in addresses
+
+["683"]  # CAJA TELEFONIST (catalog: "CAJA TELMEX" until 2015)
+legal_name = "Caja de Ahorro de los Telefonistas, S.C. de A.P. de R.L. de C.V."
+
+["725"]  # COOPDESARROLLO
+legal_name = "Coopdesarrollo, S.C. de A.P. de R.L. de C.V."
+
+# ------------------------------------------------------------------ Other participants
+
+["001"]  # BANXICO
+legal_name = "Banco de México"
+ambiguous_names = ["BANXICO", "Banco de México"]  # every receipt's CEP footer names Banxico
+
+["620"]  # PROFUTURO (AFORE)
+legal_name = "Profuturo Afore, S.A. de C.V."
+
+["684"]  # TRANSFER (cámara de compensación; catalog briefly "OPM")
+legal_name = "Operadora de Pagos Móviles México, S.A. de C.V."
+ambiguous_names = ["TRANSFER"]
+
+["685"]  # FONDO (FIRA)
+legal_name = "Fondo de Garantía y Fomento para la Agricultura, Ganaderia y Avicultura"
+aliases = ["FIRA"]
+
+["901"]  # CLS (international FX settlement; not in the SPEI participants list)
+ambiguous_names = ["CLS"]
+
+["902"]  # INDEVAL
+legal_name = "S.D. Indeval, S.A. de C.V. Institución para el Depósito de Valores"
+
+["903"]  # CoDi Valida (CoDi validation service, not a bank)
+ambiguous_names = ["CoDi Valida"]

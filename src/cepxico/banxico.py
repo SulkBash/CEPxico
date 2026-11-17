@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
 
@@ -34,12 +34,16 @@ REQUEST_TIMEOUT = 90  # valida.do can take >25 s when searching historical data
 _XHR = {"X-Requested-With": "XMLHttpRequest"}
 
 
-class CEPStatus(str, Enum):
+class CEPStatus(StrEnum):
     FOUND = "found"  # CEP exists and the PDF was saved
     NOT_FOUND = "not_found"  # Banxico has no CEP for this data (possible fake receipt)
-    INPUT_ERROR = "input_error"  # data invalid, or a bank couldn't be resolved
+    INPUT_ERROR = "input_error"  # data invalid
     CAPTCHA = "captcha"  # Banxico is asking for the security image
     ERROR = "error"  # network/server problem; says nothing about the receipt
+
+
+class BanxicoError(Exception):
+    """Banxico couldn't be reached or answered unexpectedly."""
 
 
 @dataclass(frozen=True)
@@ -47,8 +51,6 @@ class CEPResult:
     status: CEPStatus
     message: str
     pdf_path: Path | None = None
-    sender: Bank | None = None  # bank actually sent to Banxico
-    receiver: Bank | None = None
 
     @property
     def ok(self) -> bool:
@@ -99,19 +101,22 @@ class BanxicoCEPClient:
             self._started = True
 
     def get_catalog(self, fecha: str) -> BankCatalog:
-        """Bank catalog valid on `fecha` (dd-mm-yyyy)."""
+        """Banks participating in SPEI on `fecha` (dd-mm-yyyy). Raises BanxicoError."""
         if fecha not in self._catalogs:
-            self._start()
-            resp = self.session.get(
-                self.base_url + "instituciones.do",
-                params={"fecha": fecha},
-                headers=_XHR,
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-            rows = resp.json().get("instituciones")
+            try:
+                self._start()
+                resp = self.session.get(
+                    self.base_url + "instituciones.do",
+                    params={"fecha": fecha},
+                    headers=_XHR,
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                rows = resp.json().get("instituciones")
+            except (requests.RequestException, ValueError) as e:
+                raise BanxicoError(f"Could not load Banxico bank list: {e}") from e
             if not rows:
-                raise RuntimeError(f"Banxico returned no bank catalog for {fecha}")
+                raise BanxicoError(f"Banxico returned no bank list for {fecha}")
             self._catalogs[fecha] = BankCatalog.from_rows(rows)
             logger.debug("Loaded %d banks for %s", len(self._catalogs[fecha]), fecha)
         return self._catalogs[fecha]
@@ -121,12 +126,13 @@ class BanxicoCEPClient:
         *,
         fecha: str,
         clave_rastreo: str,
-        sender_name: str | None,
-        receiver_name: str | None,
+        sender: Bank,
+        receiver: Bank,
         account: str,
         amount: str,
     ) -> CEPResult:
-        """Looks up a SPEI transfer and saves its CEP PDF into `output_dir`."""
+        """Looks up a SPEI transfer and saves its CEP PDF into `output_dir`.
+        `sender`/`receiver` come from this date's catalog (see identify.py)."""
         account = re.sub(r"\D", "", account or "")
         clave = re.sub(r"[^A-Za-z0-9]", "", clave_rastreo or "").upper()
 
@@ -141,31 +147,11 @@ class BanxicoCEPClient:
         except ValueError:
             return CEPResult(CEPStatus.INPUT_ERROR, f"Invalid amount '{amount}'")
 
-        try:
-            catalog = self.get_catalog(fecha)
-        except (requests.RequestException, ValueError, RuntimeError) as e:
-            return CEPResult(CEPStatus.ERROR, f"Could not load Banxico bank list: {e}")
-
-        sender = catalog.resolve(sender_name)
-        if not sender:
-            return CEPResult(CEPStatus.INPUT_ERROR, f"Sending bank '{sender_name}' not in Banxico's list")
-        receiver = catalog.by_clabe(account) or catalog.resolve(receiver_name)
-        if not receiver:
-            return CEPResult(
-                CEPStatus.INPUT_ERROR,
-                f"Receiving bank '{receiver_name}' not in Banxico's list",
-                sender=sender,
-            )
         if sender.code == receiver.code:
             return CEPResult(
                 CEPStatus.INPUT_ERROR,
                 f"Sender and receiver are both {sender.name}; CEP only covers interbank transfers",
-                sender=sender,
-                receiver=receiver,
             )
-
-        def result(status: CEPStatus, message: str, pdf_path: Path | None = None) -> CEPResult:
-            return CEPResult(status, message, pdf_path=pdf_path, sender=sender, receiver=receiver)
 
         form = {
             "tipoCriterio": "T",  # T = clave de rastreo, R = número de referencia
@@ -185,22 +171,22 @@ class BanxicoCEPClient:
                 self.base_url + "valida.do", data=form, headers=_XHR, timeout=self.timeout
             )
         except requests.RequestException as e:
-            return result(CEPStatus.ERROR, f"Banxico request failed: {e}")
+            return CEPResult(CEPStatus.ERROR, f"Banxico request failed: {e}")
 
         body = resp.text or ""
         message = _html_to_text(body)[:300]
 
         if resp.status_code >= 500:
-            return result(CEPStatus.ERROR, f"Banxico server error {resp.status_code}: {message}")
+            return CEPResult(CEPStatus.ERROR, f"Banxico server error {resp.status_code}: {message}")
         if "meta:stats=ERR" in body:
-            return result(CEPStatus.INPUT_ERROR, "Banxico rejected the data as incomplete or invalid")
+            return CEPResult(CEPStatus.INPUT_ERROR, "Banxico rejected the data as incomplete or invalid")
         if re.search(r"name=['\"]varHideCaptcha['\"][^>]*value=['\"]false", body):
-            return result(
+            return CEPResult(
                 CEPStatus.CAPTCHA,
                 "Banxico is asking for the security image; check this receipt on the website",
             )
         if resp.status_code >= 400:
-            return result(CEPStatus.NOT_FOUND, message or f"HTTP {resp.status_code}")
+            return CEPResult(CEPStatus.NOT_FOUND, message or f"HTTP {resp.status_code}")
 
         # Banxico only serves the PDF when the operation was found.
         try:
@@ -208,12 +194,12 @@ class BanxicoCEPClient:
                 self.base_url + "descarga.do", params={"formato": "PDF"}, timeout=self.timeout
             )
         except requests.RequestException as e:
-            return result(CEPStatus.ERROR, f"CEP download failed: {e}")
+            return CEPResult(CEPStatus.ERROR, f"CEP download failed: {e}")
 
         if pdf.status_code != 200 or not pdf.content.startswith(b"%PDF"):
-            return result(CEPStatus.NOT_FOUND, message or "Banxico returned no CEP for this data")
+            return CEPResult(CEPStatus.NOT_FOUND, message or "Banxico returned no CEP for this data")
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = self.output_dir / f"CEP_{fecha}_{_safe_filename(clave)}.pdf"
         pdf_path.write_bytes(pdf.content)
-        return result(CEPStatus.FOUND, "CEP downloaded", pdf_path=pdf_path)
+        return CEPResult(CEPStatus.FOUND, "CEP downloaded", pdf_path=pdf_path)

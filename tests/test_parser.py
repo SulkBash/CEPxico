@@ -43,17 +43,18 @@ Saldo disponible 9,999.99
 class TestFullReceipts:
     def test_santander(self):
         p = parse_payment(SANTANDER_RECEIPT, "santander.pdf")
-        assert p.sender_bank == "Santander"
+        assert p.sender_bank is None  # no sender label; identified later (test_identify.py)
         assert p.payment_date == "05-11-2026"
         assert p.tracking_key == "2026110540014TRAN00001234567"
         assert p.receiver_bank == "BBVA MEXICO"
         assert p.beneficiary_account == "012180001234567893"
         assert p.amount == "1234.50"
         assert p.error_reason == ""
+        assert p.text == SANTANDER_RECEIPT
 
     def test_banorte(self):
         p = parse_payment(BANORTE_RECEIPT)
-        assert p.sender_bank == "Banorte"
+        assert p.sender_bank is None
         assert p.payment_date == "05-11-2026"
         assert p.tracking_key == "8846APR1202611050012345678"
         assert p.receiver_bank == "STP"
@@ -62,7 +63,7 @@ class TestFullReceipts:
 
     def test_bbva_uses_description_amount_not_balance(self):
         p = parse_payment(BBVA_RECEIPT)
-        assert p.sender_bank == "BBVA"
+        assert p.sender_bank is None
         assert p.payment_date == "05-11-2026"
         assert p.tracking_key == "BNET01002611050012345678"
         assert p.amount == "2000.00"
@@ -81,9 +82,15 @@ def test_tracking_key_too_short_is_rejected():
     assert find_tracking_key("Clave de rastreo: ABC123") is None
 
 
+AFIRME_SPLIT_KEY = "Clave de rastreo:\nAFIR0100261105\n0012345678\nFolio Interbancario 123"
+
+
 def test_afirme_key_split_across_lines():
-    text = "Clave de rastreo:\nAFIR0100261105\n0012345678\nFolio Interbancario 123"
-    assert find_tracking_key(text, sender_bank="Afirme") == "AFIR01002611050012345678"
+    assert find_tracking_key("Banca Afirme\n" + AFIRME_SPLIT_KEY) == "AFIR01002611050012345678"
+
+
+def test_split_key_is_only_joined_on_afirme_receipts():
+    assert find_tracking_key(AFIRME_SPLIT_KEY) is None
 
 
 @pytest.mark.parametrize(
@@ -133,8 +140,15 @@ def test_missing_receiver_is_fine_with_valid_clabe():
     assert p.missing_fields() == []
 
 
-@pytest.mark.xfail(
-    strict=True, reason="Known issue: sender is the first bank named anywhere, even the receiver"
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Banco emisor: BANORTE", "BANORTE"),
+        ("Institución ordenante: BBVA MEXICO", "BBVA MEXICO"),
+        ("BANCO DE ORIGEN: Santander", "Santander"),
+        ("Banco que envía: Nu México", "Nu México"),
+        ("Banco destino: BBVA MEXICO", None),
+    ],
 )
-def test_sender_is_not_confused_with_receiver():
-    assert find_sender_bank("BANORTE\nBanco Destino: BBVA MEXICO") == "BANORTE"
+def test_sender_bank_label(text, expected):
+    assert find_sender_bank(text) == expected

@@ -17,41 +17,46 @@ from cepxico.models import FIELD_LABELS, PaymentData
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
-# Sending bank
+# Bank fields (as written on the receipt; matched to Banxico's catalog in identify.py)
 # ------------------------------------------------------------------------------
 
-# Checked in order; the first one found anywhere in the text wins.
-# KNOWN ISSUE: this doesn't distinguish the sending bank from the receiving bank
-# (a transfer *to* BBVA is reported as *from* BBVA). See tests/test_parser.py.
-SENDER_KEYWORDS: tuple[str, ...] = (
-    "BBVA", "Santander", "Afirme", "STP", "Banamex", "HSBC",
-    "KUSPIT Disponibilidad de pago: Mismo día",  # wording seen on Kuspit receipts
-    "ACTINVER", "AFIRME", "ARCUS FI", "ASP INTEGRA OPC", "AUTOFIN", "AZTECA", "BaBien", "BAJIO",
-    "BANAMEX", "BANCO COVALTO", "BANCOMEXT", "BANCOPPEL", "BANCO S3", "BANCREA", "BANJERCITO",
-    "BANKAOOL", "BANK OF AMERICA", "BANK OF CHINA", "BANOBRAS", "BANORTE", "BANREGIO", "BANSI",
-    "BANXICO", "BARCLAYS", "BBASE", "BBVA MEXICO", "BMONEX", "CAJA POP MEXICA", "CAJA TELEFONIST",
-    "Cartera Digital", "CB INTERCAM", "CIBANCO", "CI BOLSA", "CITI MEXICO", "CLS", "CoDi Valida",
-    "COMPARTAMOS", "CONSUBANCO", "CREDICAPITAL", "CREDICLUB", "CRISTOBAL COLON", "Cuenca", "DONDE",
-    "FINAMEX", "FINCOMUN", "FINCO PAY", "FOMPED", "FONDEADORA", "FONDO (FIRA)", "GBM",
-    "HIPOTECARIA FED", "ICBC", "INBURSA", "INDEVAL", "INMOBILIARIO", "INTERCAM BANCO", "INVEX",
-    "JP MORGAN", "KLAR", "KUSPIT", "LIBERTAD", "MASARI", "Mercado Pago W", "MIFEL", "MIZUHO BANK",
-    "MONEXCB", "MUFG", "MULTIVA BANCO", "NAFIN", "NU MEXICO", "NVIO", "PAGATODO", "Peibo",
-    "PROFUTURO", "SABADELL", "SANTANDER", "SCOTIABANK", "SHINHAN", "SPIN BY OXXO", "TESORED",
-    "TRANSFER", "UALA", "UNAGRA", "VALMEX", "VALUE", "VECTOR", "VE POR MAS", "VOLKSWAGEN",
-)  # fmt: skip
+SENDER_PATTERNS = (
+    r"Banco\s*(?:emisor|ordenante|de\s*origen|origen)[:\s]*([^\n]+)",
+    r"Instituci[oó]n\s*(?:emisora|ordenante|de\s*origen)[:\s]*([^\n]+)",
+    r"Banco\s*que\s*env[ií]a[:\s]*([^\n]+)",
+)
+
+RECEIVER_PATTERNS = (
+    r"Banco Destino[:\s]*([^\n]+)",
+    r"Banco receptor\s*[:\s]*([^\n\"]+)",
+    r"Banco beneficiario[:\s]*([^\n]+)",
+    r"Banco\s*Participante[:\s]*([^\n]+)",
+    r"Banco destino[:\s]*([^\n]+)",
+    r"Instituci[oó]n\s*receptora[:\s]*([^\n]+)",
+)
+
+
+def _labelled_value(text: str, patterns: tuple[str, ...], flags: int = 0) -> str | None:
+    for pattern in patterns:
+        match = re.search(pattern, text, flags)
+        if match and (value := match.group(1).replace('"', "").strip()):
+            return value
+    return None
 
 
 def find_sender_bank(text: str) -> str | None:
-    sender = next(
-        (name for name in SENDER_KEYWORDS if re.search(re.escape(name), text, re.IGNORECASE)),
-        None,
-    )
-    # Bank-specific signatures override the keyword scan.
-    if re.search(r"BANCO MERCANTIL DEL NORTE", text, re.IGNORECASE):
-        sender = "Banorte"
-    elif re.search(r"Comprobante de Operación", text, re.IGNORECASE):
-        sender = "Santander"  # KNOWN ISSUE: other banks use this wording too
-    return sender
+    """Text next to a sending-bank label ("Banco emisor: ..."), or None."""
+    return _labelled_value(text, SENDER_PATTERNS, re.IGNORECASE)
+
+
+def find_receiver_bank(text: str) -> str | None:
+    """Text next to a receiving-bank label ("Banco destino: ..."), or None."""
+    return _labelled_value(text, RECEIVER_PATTERNS)
+
+
+def _mentions(text: str, bank_name: str) -> bool:
+    """Layout hint: whether the receipt names a bank whose format needs special handling."""
+    return re.search(rf"\b{re.escape(bank_name)}\b", text, re.IGNORECASE) is not None
 
 
 # ------------------------------------------------------------------------------
@@ -130,7 +135,7 @@ def _plausible_key(raw: str) -> str | None:
     return key if TRACKING_KEY_MIN_LEN <= len(key) <= TRACKING_KEY_MAX_LEN else None
 
 
-def find_tracking_key(text: str, sender_bank: str | None = None) -> str | None:
+def find_tracking_key(text: str) -> str | None:
     for pattern in TRACKING_KEY_PATTERNS:
         for raw in re.findall(pattern, text, re.IGNORECASE):
             if key := _plausible_key(raw):
@@ -141,31 +146,10 @@ def find_tracking_key(text: str, sender_bank: str | None = None) -> str | None:
     if line and (key := _plausible_key(line.group(1))):
         return key
 
-    if sender_bank == "Afirme":  # Afirme splits the key across lines before "Folio Interbancario"
+    if _mentions(text, "Afirme"):  # Afirme splits the key across lines before "Folio Interbancario"
         block = re.search(r"Clave de rastreo[:\s]*([\s\S]*?)Folio Interbancario", text)
         if block and (key := _plausible_key(block.group(1))):
             return key
-    return None
-
-
-# ------------------------------------------------------------------------------
-# Receiving bank
-# ------------------------------------------------------------------------------
-
-RECEIVER_PATTERNS = (
-    r"Banco Destino[:\s]*([^\n]+)",
-    r"Banco receptor\s*[:\s]*([^\n\"]+)",
-    r"Banco beneficiario[:\s]*([^\n]+)",
-    r"Banco\s*Participante[:\s]*([^\n]+)",
-    r"Banco destino[:\s]*([^\n]+)",
-)
-
-
-def find_receiver_bank(text: str) -> str | None:
-    for pattern in RECEIVER_PATTERNS:
-        match = re.search(pattern, text)
-        if match and (name := match.group(1).replace('"', "").strip()):
-            return name
     return None
 
 
@@ -218,8 +202,8 @@ def _clean_amount(raw: str) -> str:
     return re.sub(r"[$,\\]", "", raw).strip()
 
 
-def find_amount(text: str, sender_bank: str | None = None) -> str | None:
-    if sender_bank == "BBVA":
+def find_amount(text: str) -> str | None:
+    if _mentions(text, "BBVA"):  # BBVA lists the amount after the description
         match = re.search(_BBVA_AMOUNT, text, re.DOTALL | re.IGNORECASE)
         if match:
             return _clean_amount(match.group(1))
@@ -242,15 +226,15 @@ def find_amount(text: str, sender_bank: str | None = None) -> str | None:
 
 
 def parse_payment(text: str, source_file: str = "") -> PaymentData:
-    sender = find_sender_bank(text)
     payment = PaymentData(
         source_file=source_file,
         payment_date=find_payment_date(text),
-        tracking_key=find_tracking_key(text, sender),
-        sender_bank=sender,
+        tracking_key=find_tracking_key(text),
+        sender_bank=find_sender_bank(text),
         receiver_bank=find_receiver_bank(text),
         beneficiary_account=find_beneficiary_account(text),
-        amount=find_amount(text, sender),
+        amount=find_amount(text),
+        text=text,
     )
 
     missing = payment.missing_fields()

@@ -6,7 +6,10 @@ import pytest
 import requests
 
 from cepxico.banks import Bank
-from cepxico.banxico import BanxicoCEPClient, CEPStatus
+from cepxico.banxico import BanxicoCEPClient, BanxicoError, CEPStatus
+
+BANORTE = Bank("40072", "BANORTE")
+BBVA = Bank("40012", "BBVA MEXICO")
 
 
 @dataclass
@@ -59,8 +62,8 @@ def lookup(tmp_path, catalog_json, bbva_clabe):
         query = {
             "fecha": "10-11-2026",
             "clave_rastreo": "MBAN01002611100012345678",
-            "sender_name": "Banorte",
-            "receiver_name": None,
+            "sender": BANORTE,
+            "receiver": BBVA,
             "account": bbva_clabe,
             "amount": "1,234.5",
         }
@@ -76,8 +79,6 @@ def test_found_saves_pdf(lookup, tmp_path):
     assert result.status is CEPStatus.FOUND and result.ok
     assert result.pdf_path == tmp_path / "CEP_10-11-2026_MBAN01002611100012345678.pdf"
     assert result.pdf_path.read_bytes().startswith(b"%PDF")
-    assert result.sender == Bank("40072", "BANORTE")
-    assert result.receiver == Bank("40012", "BBVA MEXICO")  # from the CLABE
     assert posted["emisor"] == "40072"
     assert posted["receptor"] == "40012"
     assert posted["monto"] == "1234.50"
@@ -107,8 +108,7 @@ def test_banxico_responses(lookup, valida, status):
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"sender_name": "BBVA"},  # same bank on both sides
-        {"sender_name": "Banco Inexistente"},
+        {"sender": BBVA},  # same bank on both sides
         {"fecha": "2026-11-10"},
         {"amount": "abc"},
         {"clave_rastreo": ""},
@@ -118,3 +118,24 @@ def test_invalid_input_is_rejected_before_posting(lookup, overrides):
     result, posted = lookup(FakeResponse(text="unused"), **overrides)
     assert result.status is CEPStatus.INPUT_ERROR
     assert posted is None
+
+
+def test_catalog_is_fetched_once_per_date(tmp_path, catalog_json):
+    client = BanxicoCEPClient(tmp_path)
+    session = FakeSession(catalog_json, PDF, PDF)
+    calls = []
+    original_get = session.get
+    session.get = lambda url, **kw: calls.append(url) or original_get(url, **kw)
+    client.session = session
+
+    first, second = client.get_catalog("10-11-2026"), client.get_catalog("10-11-2026")
+
+    assert first is second and len(first) == 97
+    assert sum(url.endswith("instituciones.do") for url in calls) == 1
+
+
+def test_catalog_failure_raises_banxico_error(tmp_path, catalog_json):
+    client = BanxicoCEPClient(tmp_path)
+    client.session = FakeSession({"instituciones": []}, PDF, PDF)
+    with pytest.raises(BanxicoError):
+        client.get_catalog("10-11-2026")
