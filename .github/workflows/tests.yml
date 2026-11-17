@@ -1,0 +1,32 @@
+# Runs the tests on Windows, macOS and Linux, including the desktop app's tests (Linux
+# gets a virtual display) and a real OCR run. Tests never contact Banxico.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Linux packages (Tk display, OpenCV runtime)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1 libglib2.0-0
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - name: Tests
+        if: runner.os != 'Linux'
+        run: pytest
+      - name: Tests (virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pytest

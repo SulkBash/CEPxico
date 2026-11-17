@@ -298,3 +298,15 @@ def test_cli_expands_wildcards_and_folders(tmp_path):
     assert expand_paths([tmp_path]) == [a, b]  # receipts in the folder, not notes.txt
     assert expand_paths([b, tmp_path / "*.pdf"]) == [b]  # no repeats
     assert expand_paths([tmp_path / "*.jpg"]) == [tmp_path / "*.jpg"]  # reported as missing
+
+
+def test_dollar_transfer_isnt_reported_as_fake(receipt, extracted):
+    """Banxico's SPEI service doesn't know SPID transfers; asking it would say "not found"."""
+    extracted(PaymentData(source_file="r.pdf", spid=True, amount="1500.00"))
+    client = FakeClient(CEPResult(CEPStatus.NOT_FOUND, "No existe"))
+
+    result = process_file(receipt, client)
+
+    assert result.outcome is Outcome.FAILED
+    assert "SPID" in result.message and pipeline.SPID_URL in result.message
+    assert client.calls == []

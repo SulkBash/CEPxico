@@ -32,19 +32,6 @@ def test_confirmed_needs_success_and_the_cep_file(tmp_path):
     assert not is_confirmed(QueueItem("a.pdf", "1", ItemStatus.SUCCESS, result=found))
 
 
-@pytest.fixture(scope="module")
-def window(tmp_path_factory):
-    # One window for the module: creating and destroying many Tk roots in one process
-    # makes Tcl fail to initialise now and then on Windows.
-    try:
-        window = gui.CEPApp(tmp_path_factory.mktemp("ceps"))
-    except Exception as e:  # no display, or tkdnd missing
-        pytest.skip(f"Tk unavailable: {e}")
-    window.withdraw()
-    yield window
-    window.destroy()
-
-
 @pytest.fixture
 def app(window, monkeypatch):
     shown = []
@@ -274,7 +261,7 @@ def test_dialog_sends_pago_a_banco_when_ticked(app):
     )
     dialog.pago_a_banco.set(True)
     dialog._update_pago_a_banco()
-    assert dialog.labels["beneficiary_account"].cget("text") == "Cuenta ordenante"
+    assert dialog.labels["beneficiary_account"].cget("text") == "Ordering account"
     dialog.save(check_now=False)
     assert calls == [{"pago_a_banco": "1"}]
 
@@ -285,3 +272,85 @@ def test_zipped_cep_counts_as_confirmed(tmp_path):
     cep = CEPResult(CEPStatus.FOUND, "", zip_path=archive)
     found = FileResult(Path("a.pdf"), Outcome.SUCCESS, "", cep=cep)
     assert is_confirmed(QueueItem("a.pdf", "1", ItemStatus.SUCCESS, result=found))
+
+
+# --- Language, history, clipboard -------------------------------------------------------
+
+
+def test_switching_language_redraws_the_window_and_keeps_the_queue(app):
+    from cepxico import i18n
+
+    app.add_file("a.pdf")
+    app._on_file_done("a.pdf", FileResult(Path("a.pdf"), Outcome.REVIEW, "Paid to account …1234"))
+
+    app.switch_language("es")
+
+    assert i18n.get_language() == "es" and app.settings.language == "es"
+    assert app.title() == "CEPxico - Verificador de comprobantes SPEI"
+    item = app.items["a.pdf"]
+    assert app.tree.item(item.tree_id, "values")[0] == "Revisar"  # status in the new language
+    assert app.tree.item(item.tree_id, "text") == "a.pdf"
+    assert app.stat_vars["review"].get() == "1"
+    assert app.process_button.cget("text") == "Procesar archivos"
+
+    app.switch_language("en")
+    assert app.process_button.cget("text") == "Process Files"
+    app.settings = Settings()
+
+
+def test_history_window_searches_and_exports(app, tmp_path, monkeypatch):
+    import csv
+
+    from cepxico.gui import history_dialog
+    from cepxico.history import Check, History
+
+    history = History(tmp_path / "h.sqlite3")
+    for name, outcome, key in [("juan.pdf", "success", "MBAN01"), ("pedro.pdf", "review", "BNET02")]:
+        history.add(Check("2026-11-17T10:00:00-06:00", name, f"C:/{name}", "", outcome, "", tracking_key=key))
+    opened = []
+    dialog = history_dialog.HistoryDialog(app, history=history, on_open=opened.append)
+
+    assert [c.file_name for c in dialog.shown] == ["pedro.pdf", "juan.pdf"]  # newest first
+    dialog.search.set("mban")
+    assert [c.file_name for c in dialog.shown] == ["juan.pdf"]
+
+    out = tmp_path / "export.csv"
+    monkeypatch.setattr(history_dialog.filedialog, "asksaveasfilename", lambda **_: str(out))
+    monkeypatch.setattr(history_dialog.messagebox, "showinfo", lambda *a, **k: None)
+    dialog.export()
+    assert [r["File"] for r in csv.DictReader(out.open(encoding="utf-8-sig"))] == ["juan.pdf"]
+    dialog.destroy()
+
+
+def test_pasting_copied_files_queues_them(app, monkeypatch):
+    monkeypatch.setattr(gui.ImageGrab, "grabclipboard", lambda: ["C:/r/a.pdf", "C:/r/b.png"])
+    app.on_paste()
+    assert list(app.items) == ["C:/r/a.pdf", "C:/r/b.png"]
+
+
+def test_paste_on_linux_without_clipboard_tools_explains_what_to_install(app, monkeypatch):
+    errors = []
+
+    def no_tools():
+        raise NotImplementedError("wl-paste or xclip is required")
+
+    monkeypatch.setattr(gui.ImageGrab, "grabclipboard", no_tools)
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda title, msg: errors.append(msg))
+    app.on_paste()
+    assert errors and "xclip" in errors[0]
+
+
+def test_dialog_sends_spid_when_ticked(app):
+    from cepxico.gui.fields_dialog import FieldsDialog
+
+    calls = []
+    dialog = FieldsDialog(
+        app,
+        filename="r.pdf",
+        initial={"spid": "1"},
+        on_save=lambda values, check_now: calls.append(values) or {},
+        on_open_receipt=lambda: None,
+    )
+    dialog.spid.set(False)
+    dialog.save(check_now=False)
+    assert calls == [{"spid": "0"}]

@@ -1,8 +1,11 @@
 # PyInstaller build: one folder, dist/cepxico/, with two executables sharing it:
-#   cepxico.exe      console: command line, or the desktop app when run without files
-#   cepxico-gui.exe  desktop app without a console window
+#   cepxico      console: command line, or the desktop app when run without files
+#   cepxico-gui  desktop app without a console window
+# (cepxico.exe and cepxico-gui.exe on Windows). On macOS there is also
+# dist/CEPxico.app, the desktop app as a double-clickable application.
 #
-# Build:  pip install -e ".[build]"  then  pyinstaller packaging/cepxico.spec --noconfirm
+# Build on each system for that system (PyInstaller doesn't cross-compile):
+#   pip install -e ".[build]"  then  pyinstaller packaging/cepxico.spec --noconfirm
 # A folder (not --onefile) starts quickly; onefile would unpack everything to a temp
 # folder on every launch.
 import os
@@ -70,11 +73,20 @@ def build(script, name, console):
 cli, cli_exe = build("cepxico_cli.py", "cepxico", console=True)
 gui, gui_exe = build("cepxico_gui.py", "cepxico-gui", console=False)
 
-COLLECT(
-    cli_exe,
-    gui_exe,
+# On macOS the app bundle starts the first executable, so the desktop app goes first.
+executables = [gui_exe, cli_exe] if sys.platform == "darwin" else [cli_exe, gui_exe]
+folder = COLLECT(
+    *executables,
     cli.binaries + gui.binaries,
     cli.datas + gui.datas,
     name="cepxico",
     upx=False,
 )
+
+if sys.platform == "darwin":
+    BUNDLE(
+        folder,
+        name="CEPxico.app",
+        bundle_identifier="mx.cepxico.app",
+        info_plist={"NSHighResolutionCapable": True, "CFBundleShortVersionString": "2.1.0"},
+    )

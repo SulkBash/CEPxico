@@ -53,7 +53,37 @@ def banxico_is_open(monkeypatch):
     monkeypatch.setattr(pipeline, "banxico_open", lambda now=None: True)
 
 
+@pytest.fixture(scope="session")
+def window(tmp_path_factory):
+    """The desktop app's window, shared by every test that needs Tk: creating and
+    destroying many Tk roots in one process makes Tcl fail to initialise now and then
+    on Windows. Created before per-test fixtures run, so it gets its own data folder."""
+    from cepxico.gui import app as gui
+    from cepxico.history import History
+
+    home = tmp_path_factory.mktemp("window_home")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("CEPXICO_HOME", str(home))
+        try:
+            window = gui.CEPApp(tmp_path_factory.mktemp("ceps"), history=History(home / "history.sqlite3"))
+        except Exception as e:  # no display, or tkdnd missing
+            pytest.skip(f"Tk unavailable: {e}")
+    window.withdraw()
+    yield window
+    window.destroy()
+
+
 @pytest.fixture(autouse=True)
 def isolated_settings(tmp_path, monkeypatch):
-    """Never read or write the real user's settings file."""
-    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    """Never read or write the real user's settings or history."""
+    monkeypatch.setenv("CEPXICO_HOME", str(tmp_path / "appdata"))
+
+
+@pytest.fixture(autouse=True)
+def english():
+    """Messages in English whatever the machine's language; tests about Spanish switch."""
+    from cepxico import i18n
+
+    i18n.set_language("en")
+    yield
+    i18n.set_language("en")

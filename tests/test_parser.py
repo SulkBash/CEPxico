@@ -320,3 +320,42 @@ def test_correct_payment_reports_every_problem_and_changes_nothing():
 
     assert corrected is read
     assert set(errors) == {"beneficiary_account", "amount"}
+
+
+# --- SPID (dollar transfers) ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Transferencia SPID\nImporte: 1,500.00",
+        "Importe: 1,500.00 USD",
+        "Monto: US$ 1,500.00",
+        "Importe en Dólares: 1,500.00",
+        "Importe: 1,500.00 DLS",
+        "Comprobante Electrónico de Pagos SPEI / SPID\nImporte: 1,500.00 USD",  # banner + currency
+    ],
+)
+def test_dollar_transfers_are_recognised(text):
+    assert parse_payment(text).spid is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Transferencia SPEI\nImporte: $1,500.00 MXN",
+        "Clave de rastreo: MBAN01002611SPIDER0001",  # inside a word, not the system's name
+        # One banner some banks print on every receipt, peso or dollar.
+        "Comprobante Electrónico de Pagos SPEI / SPID\nImporte: $12,980.00",
+        "Concepto: pago de lusd",
+    ],
+)
+def test_peso_transfers_are_not_taken_for_dollars(text):
+    assert parse_payment(text).spid is False
+
+
+def test_spid_flag_can_be_corrected():
+    from cepxico.extraction import correct_payment
+
+    corrected, errors = correct_payment(PaymentData("r.pdf", spid=True), {"spid": "0"})
+    assert errors == {} and corrected.spid is False and corrected.edited_fields == ("spid",)

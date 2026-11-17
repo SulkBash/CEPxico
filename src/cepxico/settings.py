@@ -1,4 +1,6 @@
-"""User settings, kept between runs in %APPDATA%\\CEPxico\\settings.json.
+"""User settings, kept between runs in settings.json in the app's data folder
+(config.app_data_dir: %APPDATA%\\CEPxico on Windows, ~/Library/Application Support/CEPxico
+on macOS, ~/.config/cepxico on Linux).
 
 Shared by the desktop app (Settings button) and the command line. A missing or
 damaged file means default settings: the app must start whatever is on disk.
@@ -8,14 +10,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 from cepxico.banxico import CEPFiles
+from cepxico.config import app_data_dir
 from cepxico.extraction.parser import clean_field
+from cepxico.i18n import LANGUAGES
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,7 @@ class Settings:
     # without asking Banxico.
     check_own_accounts: bool = False
     own_accounts: tuple[str, ...] = ()  # CLABE, debit card or phone; digits only
+    language: str = ""  # "es" or "en"; "" = the system's language
 
     @property
     def accepted_accounts(self) -> frozenset[str] | None:
@@ -37,8 +41,7 @@ class Settings:
 
 
 def settings_path() -> Path:
-    base = os.environ.get("APPDATA")
-    return (Path(base) / "CEPxico" if base else Path.home() / ".cepxico") / "settings.json"
+    return app_data_dir() / "settings.json"
 
 
 def parse_accounts(text: str | Iterable[str]) -> tuple[tuple[str, ...], list[str]]:
@@ -77,6 +80,8 @@ def load_settings(path: Path | None = None) -> Settings:
     values = {k: v for k, v in data.items() if k in known}
     if "check_own_accounts" in values and not isinstance(values["check_own_accounts"], bool):
         del values["check_own_accounts"]
+    if "language" in values and values["language"] not in LANGUAGES:
+        del values["language"]
     if "cep_files" in values:
         try:
             values["cep_files"] = CEPFiles(values["cep_files"])

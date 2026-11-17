@@ -7,6 +7,7 @@ from pathlib import Path
 
 from cepxico.extraction.parser import correct_payment, parse_payment
 from cepxico.extraction.text import SUPPORTED_EXTENSIONS, ExtractionError, extract_text
+from cepxico.i18n import tr
 from cepxico.models import PaymentData
 
 __all__ = [
@@ -33,6 +34,6 @@ def extract_payment(path: Path | str) -> PaymentData:
 
     if not text.strip():
         logger.warning("%s: no text could be extracted", path.name)
-        return PaymentData(source_file=path.name, error_reason="No text extracted")
+        return PaymentData(source_file=path.name, error_reason=tr("No text extracted"))
 
     return parse_payment(text, source_file=path.name)

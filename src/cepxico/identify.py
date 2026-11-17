@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from cepxico.banks import Bank, BankDirectory
+from cepxico.i18n import tr
 from cepxico.models import PaymentData
 
 
@@ -34,6 +35,18 @@ class BankSource(StrEnum):
     SIGNATURE = "bank-specific wording"
     TEXT = "bank named on receipt"
 
+    @property
+    def label(self) -> str:
+        """How the bank was identified, in the current language."""
+        labels = {
+            BankSource.CLABE: tr("CLABE prefix"),
+            BankSource.LABEL: tr("receipt field"),
+            BankSource.TRACKING_KEY: tr("clave de rastreo prefix"),
+            BankSource.SIGNATURE: tr("bank-specific wording"),
+            BankSource.TEXT: tr("bank named on receipt"),
+        }
+        return labels[self]
+
 
 @dataclass(frozen=True)
 class BankMatch:
@@ -41,7 +54,7 @@ class BankMatch:
     source: BankSource
 
     def __str__(self) -> str:
-        return f"{self.bank.name} ({self.source.value})"
+        return f"{self.bank.name} ({self.source.label})"
 
 
 def identify_receiver(payment: PaymentData, directory: BankDirectory) -> BankMatch | None:

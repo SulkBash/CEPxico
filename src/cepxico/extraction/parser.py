@@ -16,7 +16,8 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from cepxico.banks import clabe_is_valid
-from cepxico.models import EDITABLE_LABELS, FIELD_LABELS, PaymentData
+from cepxico.i18n import tr
+from cepxico.models import EDITABLE_FIELDS, FLAGS, PaymentData, field_label
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +306,31 @@ def find_amount(text: str) -> str | None:
 
 
 # ------------------------------------------------------------------------------
+# SPID (dollar transfers)
+# ------------------------------------------------------------------------------
+
+# SPID moves US dollars between Mexican banks. The currency is the reliable sign: pesos
+# are never written as USD. The system's name alone isn't: some banks print one banner,
+# "Comprobante Electrónico de Pagos SPEI / SPID", on every receipt, so "SPID" counts
+# only on a receipt that doesn't also name SPEI.
+DOLLAR_PATTERNS = (
+    r"\bUSD\b",
+    r"\bUS\s?\$",
+    r"\bD[oó]lares\b",
+    r"\bDLS\b",
+)
+
+
+def find_spid(text: str) -> bool:
+    """Whether the receipt is for a dollar transfer (SPID) rather than pesos (SPEI)."""
+    if any(re.search(pattern, text, re.IGNORECASE) for pattern in DOLLAR_PATTERNS):
+        return True
+    return bool(re.search(r"\bSPID\b", text, re.IGNORECASE)) and not re.search(
+        r"\bSPEI\b", text, re.IGNORECASE
+    )
+
+
+# ------------------------------------------------------------------------------
 # All fields
 # ------------------------------------------------------------------------------
 
@@ -317,28 +343,33 @@ def clean_field(name: str, raw: str) -> str | None:
         return None
     if name == "payment_date":
         if not re.fullmatch(DATE, raw, re.IGNORECASE) or not (date := _first_valid_date([raw])):
-            raise ValueError(f"'{raw}' isn't a valid date (day/month/year, e.g. 05/11/2026)")
+            raise ValueError(tr("'{raw}' isn't a valid date (day/month/year, e.g. 05/11/2026)", raw=raw))
         return date
     if name == "tracking_key":
         # Banxico takes letters and digits only; separators shown on receipts are dropped.
         key = re.sub(r"[^A-Za-z0-9]", "", raw).upper()
         if not 0 < len(key) <= TRACKING_KEY_MAX_LEN:
-            raise ValueError(f"must be 1 to {TRACKING_KEY_MAX_LEN} letters and digits")
+            raise ValueError(tr("must be 1 to {max} letters and digits", max=TRACKING_KEY_MAX_LEN))
         return key
     if name == "beneficiary_account":
         if re.search(r"[^\d\s-]", raw):
-            raise ValueError("must contain digits only")
+            raise ValueError(tr("must contain digits only"))
         digits = re.sub(r"\D", "", raw)
         if len(digits) not in ACCOUNT_LENGTHS:
-            raise ValueError(f"has {len(digits)} digits; expected 18 (CLABE), 16 (debit card) or 10 (phone)")
+            raise ValueError(
+                tr(
+                    "has {count} digits; expected 18 (CLABE), 16 (debit card) or 10 (phone)",
+                    count=len(digits),
+                )
+            )
         if len(digits) == 18 and not clabe_is_valid(digits):
-            raise ValueError("isn't a valid CLABE (its last digit doesn't match); check for a typo")
+            raise ValueError(tr("isn't a valid CLABE (its last digit doesn't match); check for a typo"))
         return digits
     if name == "amount":
         if not re.fullmatch(rf"{_CURRENCY}[\d,]+(?:\.\d{{1,2}})?\s*(?:MXN|MXP)?", raw, re.IGNORECASE) or not (
             amount := _clean_amount(re.sub(r"(?i)MX[NP]", "", raw))
         ):
-            raise ValueError(f"'{raw}' isn't a valid amount (e.g. 1,500.00)")
+            raise ValueError(tr("'{raw}' isn't a valid amount (e.g. 1,500.00)", raw=raw))
         return amount
     if name in ("sender_bank", "receiver_bank"):
         return " ".join(raw.split())  # matched against Banxico's list for the date later
@@ -350,12 +381,12 @@ def correct_payment(payment: PaymentData, values: Mapping[str, str]) -> tuple[Pa
 
     Returns (corrected payment, {}) or, if any value is invalid, (`payment` unchanged,
     {field: problem}). Fields whose value changes are added to `edited_fields`.
-    "pago_a_banco" is a flag: "1" for a payment to the receiving bank itself, "" or "0"
-    for an ordinary one."""
+    "pago_a_banco" and "spid" are flags: "1" for a payment to the receiving bank itself
+    or a dollar transfer, "" or "0" otherwise."""
     cleaned: dict[str, str | bool | None] = {}
     errors: dict[str, str] = {}
     for name, raw in values.items():
-        if name == "pago_a_banco":
+        if name in FLAGS:
             cleaned[name] = raw.strip() in ("1", "true", "True")
             continue
         try:
@@ -369,7 +400,7 @@ def correct_payment(payment: PaymentData, values: Mapping[str, str]) -> tuple[Pa
         payment,
         **cleaned,  # type: ignore[arg-type]
         error_reason="",  # the pipeline reports whatever is still missing
-        edited_fields=tuple(f for f in EDITABLE_LABELS if f in edited),
+        edited_fields=tuple(f for f in EDITABLE_FIELDS if f in edited),
     )
     return corrected, {}
 
@@ -383,14 +414,15 @@ def parse_payment(text: str, source_file: str = "") -> PaymentData:
         receiver_bank=find_receiver_bank(text),
         beneficiary_account=find_beneficiary_account(text),
         amount=find_amount(text),
+        spid=find_spid(text),
         text=text,
     )
 
     missing = payment.missing_fields()
     if missing:
         first = "tracking_key" if "tracking_key" in missing else missing[0]
-        payment.error_reason = f"Missing {FIELD_LABELS[first]}"
-        logger.info("%s: missing %s", source_file, ", ".join(FIELD_LABELS[f] for f in missing))
+        payment.error_reason = tr("Missing {field}", field=field_label(first))
+        logger.info("%s: missing %s", source_file, ", ".join(missing))
 
     logger.info(
         "%s: date=%s key=%s sender=%s receiver=%s account=%s amount=%s",

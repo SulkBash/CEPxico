@@ -7,24 +7,36 @@ from collections.abc import Callable, Mapping
 from tkinter import ttk
 
 from cepxico.gui import theme
-from cepxico.models import FIELD_LABELS
+from cepxico.i18n import tr
+from cepxico.models import FIELD_NAMES, field_label
 
 ERROR_COLOR = theme.STATUS_COLORS["status_failed"]
-HINTS = {
-    "payment_date": "day/month/year",
-    "sender_bank": "name Banxico uses, e.g. BANORTE",
-    "receiver_bank": "not needed with a valid CLABE",
-    "beneficiary_account": "CLABE, debit card or phone",
-}
-PAGO_A_BANCO_HINTS = {
-    "receiver_bank": "the bank that was paid",
-    "beneficiary_account": "the account the payment came from (CLABE, card or phone)",
-}
-ACCOUNT_LABELS = {False: "Cuenta beneficiaria", True: "Cuenta ordenante"}
 
-# Called with the changed fields ({field: typed text}, plus "pago_a_banco": "1"/"0" if
-# that box changed) and whether to check at Banxico right away; returns {field: problem}
-# for values that aren't valid ({} = saved).
+
+def hints(pago_a_banco: bool) -> dict[str, str]:
+    """What goes in each field, shown under it."""
+    if pago_a_banco:
+        return {
+            "payment_date": tr("day/month/year"),
+            "sender_bank": tr("name Banxico uses, e.g. BANORTE"),
+            "receiver_bank": tr("the bank that was paid"),
+            "beneficiary_account": tr("the account the payment came from (CLABE, card or phone)"),
+        }
+    return {
+        "payment_date": tr("day/month/year"),
+        "sender_bank": tr("name Banxico uses, e.g. BANORTE"),
+        "receiver_bank": tr("not needed with a valid CLABE"),
+        "beneficiary_account": tr("CLABE, debit card or phone"),
+    }
+
+
+def account_label(pago_a_banco: bool) -> str:
+    return tr("Ordering account") if pago_a_banco else tr("Beneficiary account")
+
+
+# Called with the changed fields ({field: typed text}, plus "pago_a_banco"/"spid": "1"/"0"
+# if those boxes changed) and whether to check at Banxico right away; returns
+# {field: problem} for values that aren't valid ({} = saved).
 SaveHandler = Callable[[dict[str, str], bool], Mapping[str, str]]
 
 
@@ -39,14 +51,15 @@ class FieldsDialog(tk.Toplevel):
         on_open_receipt: Callable[[], None],
     ):
         super().__init__(parent)
-        self.title("Edit Fields")
+        self.title(tr("Edit Fields"))
         self.configure(bg=theme.CARD_BG)
         self.resizable(False, False)
         self.transient(parent)  # type: ignore[arg-type]
         self._initial = dict(initial)
         self._on_save = on_save
-        self.vars = {name: tk.StringVar(value=initial.get(name, "")) for name in FIELD_LABELS}
+        self.vars = {name: tk.StringVar(value=initial.get(name, "")) for name in FIELD_NAMES}
         self.pago_a_banco = tk.BooleanVar(value=initial.get("pago_a_banco") == "1")
+        self.spid = tk.BooleanVar(value=initial.get("spid") == "1")
         self.notes: dict[str, tk.Label] = {}  # under each field: its hint, or its problem
         self.labels: dict[str, ttk.Label] = {}
 
@@ -57,44 +70,53 @@ class FieldsDialog(tk.Toplevel):
         )
         ttk.Label(
             body,
-            text="Fix anything read wrong and fill in what's missing, copying from the receipt.",
+            text=tr("Fix anything read wrong and fill in what's missing, copying from the receipt."),
             style="CardHint.TLabel",
         ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(0, 10))
 
         first_empty = None
-        for i, (name, label) in enumerate(FIELD_LABELS.items()):
+        for i, name in enumerate(FIELD_NAMES):
             row = 2 + 2 * i
-            self.labels[name] = ttk.Label(body, text=label.capitalize(), style="CardHint.TLabel")
+            self.labels[name] = ttk.Label(body, text=field_label(name).capitalize(), style="CardHint.TLabel")
             self.labels[name].grid(row=row, column=0, sticky=tk.W, padx=(0, 12))
-            entry = ttk.Entry(body, textvariable=self.vars[name], width=42, font=(theme.FONT, 10))
+            entry = ttk.Entry(body, textvariable=self.vars[name], width=42, font=theme.font(10))
             entry.grid(row=row, column=1, sticky=tk.EW, pady=(4, 0))
             if first_empty is None and not self.vars[name].get():
                 first_empty = entry
             note = tk.Label(
-                body, bg=theme.CARD_BG, font=(theme.FONT, 8), anchor=tk.W, justify=tk.LEFT, wraplength=330
+                body, bg=theme.CARD_BG, font=theme.font(8), anchor=tk.W, justify=tk.LEFT, wraplength=330
             )
             note.grid(row=row + 1, column=1, sticky=tk.W)
             self.notes[name] = note
             self._show_note(name, None)
 
-        last_row = 2 + 2 * len(FIELD_LABELS)
+        last_row = 2 + 2 * len(FIELD_NAMES)
         ttk.Checkbutton(
             body,
-            text="Pago a banco: paid to the receiving bank itself, not to one of its customers",
+            text=tr("Pago a banco: paid to the receiving bank itself, not to one of its customers"),
             variable=self.pago_a_banco,
             command=self._update_pago_a_banco,
             style="Card.TCheckbutton",
         ).grid(row=last_row, column=0, columnspan=2, sticky=tk.W, pady=(10, 0))
+        ttk.Checkbutton(
+            body,
+            text=tr(
+                "Dollar transfer (SPID): checked at Banxico's CEP-SPID, which asks you to type "
+                "a security image"
+            ),
+            variable=self.spid,
+            style="Card.TCheckbutton",
+        ).grid(row=last_row + 1, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
         self._update_pago_a_banco()
 
         buttons = tk.Frame(body, bg=theme.CARD_BG)
-        buttons.grid(row=last_row + 1, column=0, columnspan=2, sticky=tk.EW, pady=(14, 0))
-        theme.make_button(buttons, "Open Receipt", on_open_receipt).pack(side=tk.LEFT)
+        buttons.grid(row=last_row + 2, column=0, columnspan=2, sticky=tk.EW, pady=(14, 0))
+        theme.make_button(buttons, tr("Open Receipt"), on_open_receipt).pack(side=tk.LEFT)
         theme.make_button(
-            buttons, "Save and Check", lambda: self.save(check_now=True), variant="primary"
+            buttons, tr("Save and Check"), lambda: self.save(check_now=True), variant="primary"
         ).pack(side=tk.RIGHT)
-        theme.make_button(buttons, "Save", lambda: self.save(check_now=False)).pack(side=tk.RIGHT, padx=6)
-        theme.make_button(buttons, "Cancel", self.destroy).pack(side=tk.RIGHT)
+        theme.make_button(buttons, tr("Save"), lambda: self.save(check_now=False)).pack(side=tk.RIGHT, padx=6)
+        theme.make_button(buttons, tr("Cancel"), self.destroy).pack(side=tk.RIGHT)
 
         self.bind("<Return>", lambda _e: self.save(check_now=True))
         self.bind("<Escape>", lambda _e: self.destroy())
@@ -108,21 +130,22 @@ class FieldsDialog(tk.Toplevel):
             for name, var in self.vars.items()
             if var.get().strip() != self._initial.get(name, "").strip()
         }
-        if self.pago_a_banco.get() != (self._initial.get("pago_a_banco") == "1"):
-            changed["pago_a_banco"] = "1" if self.pago_a_banco.get() else "0"
+        for name, var in (("pago_a_banco", self.pago_a_banco), ("spid", self.spid)):
+            if var.get() != (self._initial.get(name) == "1"):
+                changed[name] = "1" if var.get() else "0"
         return changed
 
     def _update_pago_a_banco(self) -> None:
-        self.labels["beneficiary_account"].configure(text=ACCOUNT_LABELS[self.pago_a_banco.get()])
-        for name in PAGO_A_BANCO_HINTS:
+        self.labels["beneficiary_account"].configure(text=account_label(self.pago_a_banco.get()))
+        for name in ("receiver_bank", "beneficiary_account"):
             self._show_note(name, None)
 
     def _show_note(self, name: str, error: str | None) -> None:
         if error:
             self.notes[name].configure(text=error, fg=ERROR_COLOR)
         else:
-            hints = PAGO_A_BANCO_HINTS if self.pago_a_banco.get() else {}
-            self.notes[name].configure(text=hints.get(name, HINTS.get(name, "")), fg=theme.TEXT_MUTED)
+            text = hints(self.pago_a_banco.get()).get(name, "")
+            self.notes[name].configure(text=text, fg=theme.TEXT_MUTED)
 
     def save(self, *, check_now: bool) -> None:
         errors = self._on_save(self.changed_values(), check_now)

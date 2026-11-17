@@ -5,18 +5,36 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from cepxico.banks import clabe_is_valid
+from cepxico.i18n import tr
 
-# Label shown to users for each field, in display order.
-FIELD_LABELS = {
-    "payment_date": "fecha de pago",
-    "tracking_key": "clave de rastreo",
-    "sender_bank": "banco emisor",
-    "receiver_bank": "banco receptor",
-    "beneficiary_account": "cuenta beneficiaria",
-    "amount": "monto",
-}
+# Fields shown to users, in display order; field_label() gives each one's name.
+FIELD_NAMES = (
+    "payment_date",
+    "tracking_key",
+    "sender_bank",
+    "receiver_bank",
+    "beneficiary_account",
+    "amount",
+)
 # Everything the user can change in a receipt's data, for listing what they changed.
-EDITABLE_LABELS = {**FIELD_LABELS, "pago_a_banco": "pago a banco"}
+FLAGS = ("pago_a_banco", "spid")  # yes/no fields
+EDITABLE_FIELDS = (*FIELD_NAMES, *FLAGS)
+
+
+def field_label(name: str) -> str:
+    """What field `name` is called, lowercase, in the current language."""
+    labels = {
+        "payment_date": tr("payment date"),
+        "tracking_key": tr("clave de rastreo"),
+        "sender_bank": tr("sending bank"),
+        "receiver_bank": tr("receiving bank"),
+        "beneficiary_account": tr("beneficiary account"),
+        "amount": tr("amount"),
+        "pago_a_banco": tr("pago a banco"),
+        "spid": tr("dollars (SPID)"),
+    }
+    return labels[name]
+
 
 # Fields the receipt itself must provide, in reporting order. The sending bank isn't
 # here: it's identified later against Banxico's catalog (see identify.py).
@@ -37,6 +55,8 @@ class PaymentData:
     # Banco"). `beneficiary_account` then holds the *ordering* account, as Banxico asks.
     pago_a_banco: bool = False
     amount: str | None = None  # e.g. "1234.50"
+    # A dollar transfer through SPID, not SPEI: Banxico's CEP-SPID service, not checked here.
+    spid: bool = False
     error_reason: str = ""
     text: str = field(default="", repr=False, compare=False)  # full receipt text
     edited_fields: tuple[str, ...] = ()  # fields the user typed in, not read from the receipt
@@ -53,5 +73,5 @@ class PaymentData:
     def label(self, name: str) -> str:
         """How to call field `name` for this payment."""
         if name == "beneficiary_account" and self.pago_a_banco:
-            return "cuenta ordenante"
-        return EDITABLE_LABELS[name]
+            return tr("ordering account")
+        return field_label(name)

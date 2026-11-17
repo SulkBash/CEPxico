@@ -16,10 +16,10 @@ from cepxico.extraction import correct_payment
 from cepxico.identify import BankSource, identify_receiver, identify_sender
 from cepxico.models import PaymentData
 from cepxico.pipeline import (
-    BLOCKED_MESSAGE,
-    CLOSED_MESSAGE,
     MEXICO_CITY,
     Outcome,
+    blocked_message,
+    closed_message,
     process_file,
     process_files,
 )
@@ -57,9 +57,9 @@ def test_matching_cep_is_success(receipt):
 @pytest.mark.parametrize(
     ("xml", "shown"),
     [
-        ({"amount": "99.00"}, "monto 99.00"),
+        ({"amount": "99.00"}, "amount 99.00"),
         ({"clave": "OTRA01002611050012345678"}, "clave de rastreo OTRA01002611050012345678"),
-        ({"account": with_check_digit("01218000999999999")}, "cuenta beneficiaria …"),
+        ({"account": with_check_digit("01218000999999999")}, "beneficiary account …"),
     ],
 )
 def test_cep_for_another_transfer_needs_review(receipt, xml, shown):
@@ -131,7 +131,7 @@ def test_pago_a_banco_banks(directory):
 def test_pago_a_banco_needs_the_receiving_bank():
     p = replace(PAGO_A_BANCO, receiver_bank=None)
     assert p.missing_fields() == ["receiver_bank"]
-    assert p.label("beneficiary_account") == "cuenta ordenante"
+    assert p.label("beneficiary_account") == "ordering account"
 
 
 def test_pago_a_banco_lookup(receipt):
@@ -176,7 +176,7 @@ def test_banxico_hours_use_mexico_city_time():
 def test_not_found_outside_banxico_hours_is_not_called_fake(receipt, monkeypatch):
     monkeypatch.setattr(pipeline, "banxico_open", lambda now=None: False)
     result = process_file(receipt, FakeClient(CEPResult(CEPStatus.NOT_FOUND, "x")), payment=COMPLETE)
-    assert result.outcome is Outcome.FAILED and result.message == CLOSED_MESSAGE
+    assert result.outcome is Outcome.FAILED and result.message == closed_message()
 
 
 def test_batch_stops_asking_once_banxico_refuses(tmp_path):
@@ -196,14 +196,35 @@ def test_batch_stops_asking_once_banxico_refuses(tmp_path):
     )
 
     assert len(client.calls) == 1
-    assert [r.message for r in results[1:]] == [BLOCKED_MESSAGE, BLOCKED_MESSAGE]
+    assert [r.message for r in results[1:]] == [blocked_message(), blocked_message()]
 
 
 # --- Settings --------------------------------------------------------------------------
 
 
-def test_settings_live_in_appdata(tmp_path):
-    assert settings_path() == tmp_path / "appdata" / "CEPxico" / "settings.json"
+def test_settings_live_in_the_data_folder(tmp_path):
+    assert settings_path() == tmp_path / "appdata" / "settings.json"  # CEPXICO_HOME, see conftest
+
+
+@pytest.mark.parametrize(
+    ("platform", "env", "expected"),
+    [
+        ("win32", {"APPDATA": "C:/Users/u/AppData/Roaming"}, "C:/Users/u/AppData/Roaming/CEPxico"),
+        ("darwin", {}, "~/Library/Application Support/CEPxico"),
+        ("linux", {}, "~/.config/cepxico"),
+        ("linux", {"XDG_CONFIG_HOME": "/xdg"}, "/xdg/cepxico"),
+    ],
+)
+def test_data_folder_per_system(monkeypatch, platform, env, expected):
+    from cepxico import config
+
+    monkeypatch.delenv("CEPXICO_HOME")
+    for name in ("APPDATA", "XDG_CONFIG_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(config.sys, "platform", platform)
+    assert config.app_data_dir() == Path(expected).expanduser()
 
 
 def test_settings_round_trip(tmp_path):
@@ -238,7 +259,8 @@ def test_cli_uses_saved_settings_and_save_option(tmp_path, monkeypatch):
     save_settings(Settings(check_own_accounts=True, own_accounts=(BBVA_CLABE,)))
     seen = []
     monkeypatch.setattr(
-        "cepxico.cli.process_files", lambda paths, out, *, jobs, settings: seen.append(settings) or []
+        "cepxico.cli.process_files",
+        lambda paths, out, *, jobs, settings, history, ask_code: seen.append(settings) or [],
     )
     receipt_path = tmp_path / "r.pdf"
     receipt_path.write_bytes(b"%PDF")

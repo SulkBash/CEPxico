@@ -193,3 +193,134 @@ def test_pdf_glyphs_drawn_one_by_one_keep_word_spaces(tmp_path):
     assert p.receiver_bank == "BBVA MEXICO"  # pdfplumber read "BBVAMEXICO"
     assert p.tracking_key == "MBAN01002611050012345678"
     assert p.amount == "1234.50"
+
+
+# --- Photos taken at an angle or sideways ------------------------------------------
+
+
+def rotated(boxes, degrees):
+    """Boxes as they'd come from a photo turned `degrees` clockwise."""
+    import math
+
+    cos, sin = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+    return [[[x * cos - y * sin, x * sin + y * cos] for x, y in b] for b in boxes]
+
+
+RECEIPT_BOXES = [
+    box(30, 100, 330, 130),
+    box(700, 100, 1060, 130),
+    box(30, 150, 200, 180),
+    box(700, 150, 900, 180),
+    box(30, 200, 360, 230),
+    box(700, 200, 1000, 230),
+]
+RECEIPT_TEXTS = [
+    "Clave de rastreo",
+    "MBAN01002611050012345678",
+    "Importe",
+    "$1,234.50",
+    "Cuenta Beneficiaria",
+    "012180001234567893",
+]
+RECEIPT_LINES = [
+    "Clave de rastreo MBAN01002611050012345678",
+    "Importe $1,234.50",
+    "Cuenta Beneficiaria 012180001234567893",
+]
+
+
+@pytest.mark.parametrize("degrees", [-12, -6, -3, 3, 6, 12])
+def test_tilted_photo_keeps_labels_and_values_on_one_line(degrees):
+    tilted = rotated(RECEIPT_BOXES, degrees)
+    assert text.skew_degrees(tilted) == pytest.approx(degrees)
+    assert lines_from_boxes(tilted, RECEIPT_TEXTS) == RECEIPT_LINES
+
+
+def test_tilted_photo_would_mix_up_lines_without_straightening(monkeypatch):
+    """Guards the test above: at 6 degrees, plain grouping really does go wrong."""
+    monkeypatch.setattr(text, "MIN_SKEW_DEGREES", 90)
+    assert lines_from_boxes(rotated(RECEIPT_BOXES, 6), RECEIPT_TEXTS) != RECEIPT_LINES
+
+
+def test_straight_text_is_left_alone():
+    assert text.skew_degrees(RECEIPT_BOXES) == 0
+    assert lines_from_boxes(RECEIPT_BOXES, RECEIPT_TEXTS) == RECEIPT_LINES
+
+
+def test_short_boxes_dont_decide_the_tilt():
+    # Short boxes (a "$", a digit) have unreliable slopes; only long text runs count.
+    noisy = [[[0, 0], [10, 8], [10, 20], [0, 12]]] * 5  # 39 degrees, but barely wider than tall
+    assert text.skew_degrees(noisy + RECEIPT_BOXES) == 0
+
+
+def jpeg_with_orientation(size, orientation: int) -> bytes:
+    from PIL import Image
+
+    image = Image.new("RGB", size, "white")
+    exif = image.getexif()
+    exif[0x0112] = orientation
+    out = io.BytesIO()
+    image.save(out, "JPEG", exif=exif)
+    return out.getvalue()
+
+
+def test_sideways_phone_photo_is_turned_upright():
+    from PIL import Image
+
+    sideways = jpeg_with_orientation((40, 20), 6)  # stored landscape, shot portrait
+    with Image.open(io.BytesIO(text.upright_image(sideways))) as upright:
+        assert upright.size == (20, 40)
+
+
+def test_upright_or_unreadable_images_are_passed_through():
+    upright = jpeg_with_orientation((40, 20), 1)
+    assert text.upright_image(upright) is upright
+    assert text.upright_image(b"not an image") == b"not an image"
+
+
+RECEIPT_FIELDS = [
+    ("Fecha de aplicación:", "05/11/2026"),
+    ("Clave de Rastreo:", "MBAN01002611050012345678"),
+    ("Banco receptor:", "BBVA MEXICO"),
+    ("Cuenta Beneficiaria:", "012180001234567893"),
+    ("Importe:", "$1,234.50 MXN"),
+]
+
+
+def assert_receipt_fields(p):
+    assert p.payment_date == "05-11-2026"
+    assert p.tracking_key == "MBAN01002611050012345678"
+    assert p.receiver_bank == "BBVA MEXICO"
+    assert p.beneficiary_account == "012180001234567893"
+    assert p.amount == "1234.50"
+
+
+@pytest.mark.parametrize("degrees", [-7, 5])
+def test_rapidocr_reads_a_receipt_photographed_at_an_angle(tmp_path, monkeypatch, degrees):
+    pytest.importorskip("rapidocr")
+    from PIL import Image
+
+    monkeypatch.delenv(text.OCR_ENGINE_ENV, raising=False)
+    get_ocr_engine.cache_clear()
+    with Image.open(io.BytesIO(render_receipt(RECEIPT_FIELDS))) as image:
+        # PIL turns counterclockwise for positive angles.
+        image.rotate(-degrees, expand=True, fillcolor="white", resample=Image.BICUBIC).save(
+            tmp_path / "r.png"
+        )
+
+    assert_receipt_fields(parse_payment(extract_text(tmp_path / "r.png")))
+
+
+def test_rapidocr_reads_a_sideways_phone_photo(tmp_path, monkeypatch):
+    pytest.importorskip("rapidocr")
+    from PIL import Image
+
+    monkeypatch.delenv(text.OCR_ENGINE_ENV, raising=False)
+    get_ocr_engine.cache_clear()
+    with Image.open(io.BytesIO(render_receipt(RECEIPT_FIELDS))) as image:
+        sideways = image.rotate(90, expand=True)  # stored turned; EXIF 6 says turn it back
+        exif = sideways.getexif()
+        exif[0x0112] = 6
+        sideways.save(tmp_path / "r.jpg", "JPEG", exif=exif, quality=95)
+
+    assert_receipt_fields(parse_payment(extract_text(tmp_path / "r.jpg")))
