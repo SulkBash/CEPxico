@@ -42,3 +42,18 @@ def directory(catalog) -> BankDirectory:
 @pytest.fixture
 def bbva_clabe() -> str:
     return with_check_digit("01218000123456789")
+
+
+@pytest.fixture(autouse=True)
+def banxico_is_open(monkeypatch):
+    """Banxico only answers 09:30-23:00; tests must not depend on when they run.
+    Tests about the hours set pipeline.banxico_open themselves."""
+    from cepxico import pipeline
+
+    monkeypatch.setattr(pipeline, "banxico_open", lambda now=None: True)
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    """Never read or write the real user's settings file."""
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))

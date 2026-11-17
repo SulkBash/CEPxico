@@ -6,12 +6,15 @@ import argparse
 import glob
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from cepxico import __version__
+from cepxico.banxico import CEPFiles
 from cepxico.config import DEFAULT_CEP_DIR
 from cepxico.extraction import SUPPORTED_EXTENSIONS
 from cepxico.pipeline import DEFAULT_JOBS, MAX_JOBS, FileResult, Outcome, process_files
+from cepxico.settings import load_settings, settings_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,6 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="cepxico",
         description="Extract SPEI transfer data from receipts and download their CEP from Banxico. "
         "Run without files to open the desktop app.",
+        epilog=f"Settings made in the desktop app (own accounts, files to save) also apply here: "
+        f"{settings_path()}",
     )
     parser.add_argument(
         "files", nargs="*", type=Path, help="receipt PDF/image files, wildcards (*.pdf) or folders"
@@ -35,6 +40,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=_jobs,
         default=DEFAULT_JOBS,
         help=f"receipts to check at once, 1-{MAX_JOBS} (default: {DEFAULT_JOBS})",
+    )
+    parser.add_argument(
+        "--save",
+        choices=[f.value for f in CEPFiles],
+        help="what to save for each CEP: the PDF, the XML, or both in one ZIP "
+        "(default: as set in the desktop app)",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="show debug output")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -94,7 +105,11 @@ def print_summary(results: Sequence[FileResult]) -> None:
     print(f"Files: {len(results)}")
     print(f"CEP found and saved: {len(by_outcome[Outcome.SUCCESS])}")
     for r in by_outcome[Outcome.SUCCESS]:
-        print(f"  + {r.path.name} -> {r.cep.pdf_path if r.cep else ''}")
+        print(f"  + {r.path.name} -> {r.cep.saved_path if r.cep else ''}")
+    if by_outcome[Outcome.REVIEW]:
+        print(f"NEEDS REVIEW (real payment, but not a clean confirmation): {len(by_outcome[Outcome.REVIEW])}")
+        for r in by_outcome[Outcome.REVIEW]:
+            print(f"  ? {r.path.name}: {r.message}")
     if by_outcome[Outcome.NOT_FOUND]:
         print(f"NOT FOUND at Banxico (check data; receipt may be fake): {len(by_outcome[Outcome.NOT_FOUND])}")
         for r in by_outcome[Outcome.NOT_FOUND]:
@@ -116,7 +131,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         run(cep_dir=args.out)
         return 0
 
-    results = [r for r in process_files(expand_paths(args.files), args.out, jobs=args.jobs) if r is not None]
+    settings = load_settings()
+    if args.save:
+        settings = replace(settings, cep_files=CEPFiles(args.save))
+    paths = expand_paths(args.files)
+    results = [r for r in process_files(paths, args.out, jobs=args.jobs, settings=settings) if r is not None]
 
     print_summary(results)
     return 0 if all(r.outcome is Outcome.SUCCESS for r in results) else 1

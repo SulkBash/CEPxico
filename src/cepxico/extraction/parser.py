@@ -16,7 +16,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from cepxico.banks import clabe_is_valid
-from cepxico.models import FIELD_LABELS, PaymentData
+from cepxico.models import EDITABLE_LABELS, FIELD_LABELS, PaymentData
 
 logger = logging.getLogger(__name__)
 
@@ -349,10 +349,15 @@ def correct_payment(payment: PaymentData, values: Mapping[str, str]) -> tuple[Pa
     """`payment` with the fields in `values` replaced by what the user typed.
 
     Returns (corrected payment, {}) or, if any value is invalid, (`payment` unchanged,
-    {field: problem}). Fields whose value changes are added to `edited_fields`."""
-    cleaned: dict[str, str | None] = {}
+    {field: problem}). Fields whose value changes are added to `edited_fields`.
+    "pago_a_banco" is a flag: "1" for a payment to the receiving bank itself, "" or "0"
+    for an ordinary one."""
+    cleaned: dict[str, str | bool | None] = {}
     errors: dict[str, str] = {}
     for name, raw in values.items():
+        if name == "pago_a_banco":
+            cleaned[name] = raw.strip() in ("1", "true", "True")
+            continue
         try:
             cleaned[name] = clean_field(name, raw)
         except ValueError as e:
@@ -362,9 +367,9 @@ def correct_payment(payment: PaymentData, values: Mapping[str, str]) -> tuple[Pa
     edited = set(payment.edited_fields) | {n for n, v in cleaned.items() if v != getattr(payment, n)}
     corrected = replace(
         payment,
-        **cleaned,
+        **cleaned,  # type: ignore[arg-type]
         error_reason="",  # the pipeline reports whatever is still missing
-        edited_fields=tuple(f for f in FIELD_LABELS if f in edited),
+        edited_fields=tuple(f for f in EDITABLE_LABELS if f in edited),
     )
     return corrected, {}
 

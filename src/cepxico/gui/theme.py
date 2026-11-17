@@ -21,6 +21,7 @@ STATUS_COLORS = {
     "status_processing": "#e67e22",
     "status_success": "#1e8e3e",
     "status_notfound": "#B45309",
+    "status_review": "#1D4ED8",
     "status_failed": "#c5221f",
     "status_cancelled": "#8e44ad",
 }
@@ -63,6 +64,10 @@ def apply(root: tk.Misc) -> None:
     style.configure("CardTitle.TLabel", background=CARD_BG, foreground=TEXT, font=(FONT_BOLD, 11))
     style.configure("CardValue.TLabel", background=CARD_BG, foreground=TEXT, font=(FONT_BOLD, 18))
     style.configure("CardHint.TLabel", background=CARD_BG, foreground=TEXT_MUTED, font=(FONT, 9))
+    style.configure("Card.TCheckbutton", background=CARD_BG, foreground=TEXT, font=(FONT, 9))
+    style.map("Card.TCheckbutton", background=[("active", CARD_BG)])
+    style.configure("Card.TRadiobutton", background=CARD_BG, foreground=TEXT, font=(FONT, 9))
+    style.map("Card.TRadiobutton", background=[("active", CARD_BG)])
 
     style.configure(
         "Modern.Treeview",

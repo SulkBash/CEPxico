@@ -15,6 +15,8 @@ FIELD_LABELS = {
     "beneficiary_account": "cuenta beneficiaria",
     "amount": "monto",
 }
+# Everything the user can change in a receipt's data, for listing what they changed.
+EDITABLE_LABELS = {**FIELD_LABELS, "pago_a_banco": "pago a banco"}
 
 # Fields the receipt itself must provide, in reporting order. The sending bank isn't
 # here: it's identified later against Banxico's catalog (see identify.py).
@@ -31,6 +33,9 @@ class PaymentData:
     sender_bank: str | None = None  # text next to a "Banco emisor/origen" label, if any
     receiver_bank: str | None = None  # text next to a "Banco destino/receptor" label, if any
     beneficiary_account: str | None = None  # CLABE (18), debit card (16) or phone (10)
+    # Paid to the receiving bank itself, not to one of its customers (Banxico's "Pago a
+    # Banco"). `beneficiary_account` then holds the *ordering* account, as Banxico asks.
+    pago_a_banco: bool = False
     amount: str | None = None  # e.g. "1234.50"
     error_reason: str = ""
     text: str = field(default="", repr=False, compare=False)  # full receipt text
@@ -38,8 +43,15 @@ class PaymentData:
 
     def missing_fields(self) -> list[str]:
         """Required fields still missing. The receiving bank isn't needed when the
-        account is a valid CLABE, because its first 3 digits identify the bank."""
+        account is a valid CLABE, because its first 3 digits identify the bank (not so
+        for a pago a banco, where the account is the sender's)."""
         missing = [name for name in REQUIRED_FIELDS if getattr(self, name) is None]
-        if "receiver_bank" in missing and clabe_is_valid(self.beneficiary_account):
+        if "receiver_bank" in missing and not self.pago_a_banco and clabe_is_valid(self.beneficiary_account):
             missing.remove("receiver_bank")
         return missing
+
+    def label(self, name: str) -> str:
+        """How to call field `name` for this payment."""
+        if name == "beneficiary_account" and self.pago_a_banco:
+            return "cuenta ordenante"
+        return EDITABLE_LABELS[name]

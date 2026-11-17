@@ -2,11 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from cepxico.banxico import CEPResult, CEPStatus
+from cepxico.banxico import CEPFiles, CEPResult, CEPStatus
 from cepxico.gui import app as gui
 from cepxico.gui.app import ItemStatus, QueueItem, is_confirmed
 from cepxico.models import PaymentData
 from cepxico.pipeline import FileResult, Outcome
+from cepxico.settings import Settings
 
 
 def result(path: str, outcome: Outcome, pdf_path: Path | None = None) -> FileResult:
@@ -51,6 +52,7 @@ def app(window, monkeypatch):
     monkeypatch.setattr(gui.messagebox, "showwarning", lambda title, _msg: shown.append(title))
     # Tests start batches without running them, so a previous test may have left one "running".
     window.processing = False
+    window.settings = Settings()  # whatever the real user's settings file says
     window.clear_files()
     shown.clear()
     window.shown = shown
@@ -209,3 +211,77 @@ def test_dialog_sends_only_changed_fields_and_shows_problems(app):
 
     assert calls[-1] == ({"beneficiary_account": CLABE}, False)
     assert not dialog.winfo_exists()
+
+
+# --- Settings and review -------------------------------------------------------------
+
+
+def test_review_results_can_be_edited_and_are_counted(app, tmp_path):
+    app.add_file("a.pdf")
+    app._on_file_done("a.pdf", FileResult(Path("a.pdf"), Outcome.REVIEW, "Paid to account …1234"))
+    item = app.items["a.pdf"]
+    assert item.status is ItemStatus.REVIEW and gui.can_edit(item)
+    assert app.stat_vars["review"].get() == "1"
+    assert "NEEDS REVIEW (1)" in app._summary(cancelled=False)
+
+
+def test_settings_dialog(app):
+    from cepxico.gui.settings_dialog import SettingsDialog
+    from cepxico.settings import Settings, load_settings
+
+    saved = []
+    dialog = SettingsDialog(
+        app, settings=Settings(), on_save=lambda s: saved.append(s) or app.apply_settings(s)
+    )
+    dialog.check_accounts.set(True)
+    dialog._update_enabled()
+    dialog.accounts.insert("1.0", "123\n")
+    dialog.save()
+    assert saved == [] and "123:" in dialog.problem.cget("text")  # stays open to fix it
+
+    dialog.accounts.delete("1.0", "end")
+    dialog.accounts.insert("1.0", CLABE)
+    dialog.cep_files.set("zip")
+    dialog.save()
+
+    expected = Settings(cep_files=CEPFiles.ZIP, check_own_accounts=True, own_accounts=(CLABE,))
+    assert saved == [expected] and app.settings == expected and load_settings() == expected
+    assert not dialog.winfo_exists()
+    app.settings = Settings()
+
+
+def test_settings_dialog_needs_an_account_when_the_check_is_on(app):
+    from cepxico.gui.settings_dialog import SettingsDialog
+    from cepxico.settings import Settings
+
+    dialog = SettingsDialog(app, settings=Settings(), on_save=lambda s: None)
+    dialog.check_accounts.set(True)
+    settings, problem = dialog.settings_entered()
+    assert settings is None and "at least one account" in problem
+    dialog.destroy()
+
+
+def test_dialog_sends_pago_a_banco_when_ticked(app):
+    from cepxico.gui.fields_dialog import FieldsDialog
+
+    calls = []
+    dialog = FieldsDialog(
+        app,
+        filename="r.pdf",
+        initial={"pago_a_banco": ""},
+        on_save=lambda values, check_now: calls.append(values) or {},
+        on_open_receipt=lambda: None,
+    )
+    dialog.pago_a_banco.set(True)
+    dialog._update_pago_a_banco()
+    assert dialog.labels["beneficiary_account"].cget("text") == "Cuenta ordenante"
+    dialog.save(check_now=False)
+    assert calls == [{"pago_a_banco": "1"}]
+
+
+def test_zipped_cep_counts_as_confirmed(tmp_path):
+    archive = tmp_path / "CEP.zip"
+    archive.write_bytes(b"PK")
+    cep = CEPResult(CEPStatus.FOUND, "", zip_path=archive)
+    found = FileResult(Path("a.pdf"), Outcome.SUCCESS, "", cep=cep)
+    assert is_confirmed(QueueItem("a.pdf", "1", ItemStatus.SUCCESS, result=found))

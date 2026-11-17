@@ -6,7 +6,23 @@ Makes the same requests as the official page's JavaScript (js/cep-min.js):
   1. GET  /cep/                          -> session cookie
   2. GET  /cep/instituciones.do?fecha=   -> JSON bank catalog [[code, name], ...]
   3. POST /cep/valida.do                 -> validates the operation (HTML fragment)
-  4. GET  /cep/descarga.do?formato=PDF   -> the CEP itself, same session
+  4. GET  /cep/descarga.do?formato=XML   -> the CEP's data, digitally signed by Banxico
+  5. GET  /cep/descarga.do?formato=PDF   -> the CEP itself, same session
+
+valida.do answers with one of these (wording from recorded responses, see tests):
+  - links to descarga.do                        the CEP exists
+  - "...se identificó el siguiente pago"        the payment exists but has no CEP; a
+                                                table gives its status (Liquidado,
+                                                En proceso, Cancelado, Retornado...)
+  - "No se encontró ningún pago..." /           no such payment
+    "Operación no encontrada..."
+  - the security image again                    usually after too many lookups;
+                                                descarga.do then says "ha excedido el
+                                                número máximo de consultas"
+
+"Pago a Banco" (receptorParticipante=1) is for payments to the receiving bank itself
+rather than to one of its customers. The account sent is then the *ordering* account,
+and the CEP's beneficiary has no account (Cuenta="NA").
 
 Banxico currently disables the security image ("overrideCaptcha": true); the page
 then sends the fixed value "c", and so do we. If Banxico turns the captcha back on,
@@ -15,11 +31,15 @@ we report it instead of trying to get around it.
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 import threading
+import xml.etree.ElementTree as ET
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
@@ -52,14 +72,113 @@ _XHR = {"X-Requested-With": "XMLHttpRequest"}
 
 class CEPStatus(StrEnum):
     FOUND = "found"  # CEP exists and the PDF was saved
-    NOT_FOUND = "not_found"  # Banxico has no CEP for this data (possible fake receipt)
+    NOT_FOUND = "not_found"  # Banxico has no such payment (possible fake receipt)
+    NO_CEP = "no_cep"  # the payment exists but has no CEP; see CEPResult.payment_status
     INPUT_ERROR = "input_error"  # data invalid
-    CAPTCHA = "captcha"  # Banxico is asking for the security image
+    CAPTCHA = "captcha"  # Banxico is asking for the security image (usually: too many lookups)
+    RATE_LIMITED = "rate_limited"  # Banxico says too many lookups; try again later
     ERROR = "error"  # network/server problem; says nothing about the receipt
+
+
+# Once Banxico answers like this it refuses further lookups for a while.
+BLOCKED_STATUSES = frozenset({CEPStatus.CAPTCHA, CEPStatus.RATE_LIMITED})
+
+_NO_CEP_MARK = re.compile(r"identific\w*\s+el\s+siguiente\s+pago", re.IGNORECASE)
+_NOT_FOUND_MARK = re.compile(
+    r"No\s+se\s+encontr\w*\s+ning\w*\s+pago|Operaci\w*\s+no\s+encontrada", re.IGNORECASE
+)
+_RATE_LIMIT_MARK = re.compile(r"excedido\s+el\s+n\w*\s+m\w*\s+de\s+consultas", re.IGNORECASE)
+_PAYMENT_STATUS = re.compile(
+    r"Estado\s+del\s+pago\s+en\s+Banxico\s*</td>\s*<td[^>]*>\s*([^<]+?)\s*<", re.IGNORECASE
+)
+RATE_LIMIT_MESSAGE = "Banxico's limit of lookups was reached; try again later"
+
+# What each status of a payment without CEP means for whoever was paid.
+NO_CEP_MESSAGES = {
+    "LIQUIDADO": "Payment is real and settled (Liquidado), but the receiving bank hasn't "
+    "issued its CEP yet; check again later",
+    "EN PROCESO": "Banxico received the payment but hasn't settled it yet (En proceso); check again later",
+    "CANCELADO": "Payment was cancelled before it settled (Cancelado); the money didn't arrive",
+    "RETORNADO": "Payment was returned by the beneficiary's bank (Retornado); the money "
+    "didn't stay in the account",
+    "DEVUELTO": "Payment was returned by the beneficiary's bank (Devuelto); the money "
+    "didn't stay in the account",
+}
+
+
+@dataclass(frozen=True)
+class Party:
+    """One side of a transfer as its CEP records it."""
+
+    bank: str
+    name: str
+    account: str  # "" when the CEP has none (the beneficiary of a pago a banco)
+    rfc: str
+
+
+@dataclass(frozen=True)
+class CEPRecord:
+    """The data in a CEP XML, which Banxico signs (`sello`, `numeroCertificado`)."""
+
+    operation_date: str  # dd-mm-yyyy
+    time: str  # hh:mm:ss
+    tracking_key: str
+    amount: str  # "1234.50"
+    concept: str
+    sender: Party
+    beneficiary: Party
+    certificate: str
+
+
+def _party(element: ET.Element | None, bank_attr: str) -> Party:
+    if element is None:
+        raise ValueError("not a CEP XML: missing Ordenante or Beneficiario")
+
+    def value(name: str) -> str:
+        v = element.attrib.get(name, "").strip()
+        return "" if v.upper() == "NA" else v
+
+    return Party(bank=value(bank_attr), name=value("Nombre"), account=value("Cuenta"), rfc=value("RFC"))
+
+
+def parse_cep_xml(data: bytes) -> CEPRecord:
+    """Reads Banxico's CEP XML (<SPEI_Tercero ...>). Raises ValueError if it isn't one."""
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as e:
+        raise ValueError(f"not a CEP XML: {e}") from e
+    sender = _party(root.find("Ordenante"), "BancoEmisor")
+    beneficiary_element = root.find("Beneficiario")
+    beneficiary = _party(beneficiary_element, "BancoReceptor")
+    assert beneficiary_element is not None  # checked by _party
+    try:
+        year, month, day = root.attrib["FechaOperacion"].split("-")
+        amount = Decimal(beneficiary_element.attrib["MontoPago"])
+        tracking_key = root.attrib["claveRastreo"]
+    except (KeyError, ValueError, InvalidOperation) as e:
+        raise ValueError(f"not a CEP XML: missing or invalid {e}") from e
+    return CEPRecord(
+        operation_date=f"{day}-{month}-{year}",
+        time=root.attrib.get("Hora", ""),
+        tracking_key=tracking_key,
+        amount=f"{amount:.2f}",
+        concept=beneficiary_element.attrib.get("Concepto", ""),
+        sender=sender,
+        beneficiary=beneficiary,
+        certificate=root.attrib.get("numeroCertificado", ""),
+    )
 
 
 class BanxicoError(Exception):
     """Banxico couldn't be reached or answered unexpectedly."""
+
+
+class CEPFiles(StrEnum):
+    """What to save for each CEP found."""
+
+    PDF = "pdf"
+    XML = "xml"  # Banxico's digitally signed data; the PDF if the XML can't be read
+    ZIP = "zip"  # one .zip holding the PDF and the XML
 
 
 @dataclass(frozen=True)
@@ -67,16 +186,29 @@ class CEPResult:
     status: CEPStatus
     message: str
     pdf_path: Path | None = None
+    xml_path: Path | None = None
+    zip_path: Path | None = None  # instead of separate PDF and XML files
+    record: CEPRecord | None = None  # the CEP's data, when its XML could be read
+    payment_status: str = ""  # Banxico's status for a payment without CEP ("Liquidado")
 
     @property
     def ok(self) -> bool:
         return self.status is CEPStatus.FOUND
 
+    @property
+    def saved_path(self) -> Path | None:
+        """The file the CEP was saved as (ZIP, PDF or XML)."""
+        return self.zip_path or self.pdf_path or self.xml_path
 
-def _html_to_text(html: str) -> str:
-    text = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
-    text = re.sub(r"<[^>]+>", " ", text).replace("&nbsp;", " ")
+
+def _html_to_text(markup: str) -> str:
+    text = re.sub(r"(?is)<(script|style|head)\b.*?</\1>|<!--.*?-->", " ", markup)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
     return " ".join(text.split())
+
+
+def _rate_limited(body: str) -> bool:
+    return bool(_RATE_LIMIT_MARK.search(html.unescape(body)))
 
 
 def _safe_filename(text: str) -> str:
@@ -184,9 +316,12 @@ class BanxicoCEPClient:
         receiver: Bank,
         account: str,
         amount: str,
+        pago_a_banco: bool = False,
+        cep_files: CEPFiles = CEPFiles.PDF,
     ) -> CEPResult:
-        """Looks up a SPEI transfer and saves its CEP PDF into `output_dir`.
-        `sender`/`receiver` come from this date's catalog (see identify.py)."""
+        """Looks up a SPEI transfer and saves its CEP into `output_dir` as `cep_files`
+        says. `sender`/`receiver` come from this date's catalog (see identify.py).
+        With `pago_a_banco`, `account` is the ordering account (see module docstring)."""
         account = re.sub(r"\D", "", account or "")
         clave = re.sub(r"[^A-Za-z0-9]", "", clave_rastreo or "").upper()
 
@@ -195,11 +330,14 @@ class BanxicoCEPClient:
         if not 0 < len(clave) <= MAX_CLAVE_LEN:
             return CEPResult(CEPStatus.INPUT_ERROR, f"Invalid clave de rastreo '{clave_rastreo}'")
         if not 0 < len(account) <= 18:
-            return CEPResult(CEPStatus.INPUT_ERROR, f"Invalid beneficiary account '{account}'")
+            return CEPResult(CEPStatus.INPUT_ERROR, f"Invalid account '{account}'")
         try:
-            amount_fmt = f"{float(str(amount).replace(',', '')):.2f}"
-        except ValueError:
+            amount_value = Decimal(str(amount).replace(",", ""))
+        except InvalidOperation:
+            amount_value = Decimal(0)
+        if not amount_value.is_finite() or amount_value <= 0:
             return CEPResult(CEPStatus.INPUT_ERROR, f"Invalid amount '{amount}'")
+        amount_fmt = f"{amount_value:.2f}"
 
         if sender.code == receiver.code:
             return CEPResult(
@@ -214,7 +352,7 @@ class BanxicoCEPClient:
             "emisor": sender.code,
             "receptor": receiver.code,
             "cuenta": account,
-            "receptorParticipante": "0",
+            "receptorParticipante": "1" if pago_a_banco else "0",
             "monto": amount_fmt,
             "captcha": "c",  # what the official page sends while the captcha is disabled
             "tipoConsulta": "1",  # 1 = download CEP, 0 = only check payment status
@@ -237,21 +375,44 @@ class BanxicoCEPClient:
             return CEPResult(CEPStatus.ERROR, f"Banxico request failed: {e}")
 
         body = resp.text or ""
+        plain = html.unescape(body)
         message = _html_to_text(body)[:300]
 
         if resp.status_code >= 500:
             return CEPResult(CEPStatus.ERROR, f"Banxico server error {resp.status_code}: {message}")
         if "meta:stats=ERR" in body:
             return CEPResult(CEPStatus.INPUT_ERROR, "Banxico rejected the data as incomplete or invalid")
+        if _rate_limited(body):
+            return CEPResult(CEPStatus.RATE_LIMITED, RATE_LIMIT_MESSAGE)
         if re.search(r"name=['\"]varHideCaptcha['\"][^>]*value=['\"]false", body):
             return CEPResult(
                 CEPStatus.CAPTCHA,
-                "Banxico is asking for the security image; check this receipt on the website",
+                "Banxico is asking for the security image, which it does after too many lookups; "
+                "try again later or check this receipt on Banxico's website",
             )
-        if resp.status_code >= 400:
+        # Checked before "not found": this page's legend also explains "No encontrado".
+        if _NO_CEP_MARK.search(plain):
+            status = m.group(1).strip() if (m := _PAYMENT_STATUS.search(plain)) else ""
+            default = f"Banxico found the payment (status: {status or 'unknown'}) but has no CEP for it"
+            return CEPResult(
+                CEPStatus.NO_CEP, NO_CEP_MESSAGES.get(status.upper(), default), payment_status=status
+            )
+        if _NOT_FOUND_MARK.search(plain) or resp.status_code >= 400:
             return CEPResult(CEPStatus.NOT_FOUND, message or f"HTTP {resp.status_code}")
 
-        # Banxico only serves the PDF when the operation was found.
+        # The CEP's data first: it's what the pipeline compares with the receipt. Not
+        # getting it doesn't stop the PDF download; the result just has no record.
+        xml, record = self._download_xml()
+        if xml is not None and record is None and _rate_limited(xml.decode("utf-8", "replace")):
+            return CEPResult(CEPStatus.RATE_LIMITED, RATE_LIMIT_MESSAGE)
+        stem = f"CEP_{fecha}_{_safe_filename(clave)}"
+        if cep_files is CEPFiles.XML and xml is not None and record is not None:
+            # Only the XML wanted, and it's a real CEP XML: no need for the PDF at all.
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            xml_path = self.output_dir / f"{stem}.xml"
+            xml_path.write_bytes(xml)
+            return CEPResult(CEPStatus.FOUND, "CEP downloaded", xml_path=xml_path, record=record)
+
         try:
             pdf = self.session.get(
                 self.base_url + "descarga.do", params={"formato": "PDF"}, timeout=self.timeout
@@ -260,9 +421,41 @@ class BanxicoCEPClient:
             return CEPResult(CEPStatus.ERROR, f"CEP download failed: {e}")
 
         if pdf.status_code != 200 or not pdf.content.startswith(b"%PDF"):
+            if _rate_limited(pdf.text or ""):
+                return CEPResult(CEPStatus.RATE_LIMITED, RATE_LIMIT_MESSAGE)
             return CEPResult(CEPStatus.NOT_FOUND, message or "Banxico returned no CEP for this data")
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        pdf_path = self.output_dir / f"CEP_{fecha}_{_safe_filename(clave)}.pdf"
+        if cep_files is CEPFiles.ZIP:
+            # Built here from what was already downloaded, rather than asking Banxico for
+            # its own ZIP: that would cost one more of its limited lookups per receipt.
+            # The XML goes in only if it's a real CEP XML, never an error page.
+            zip_path = self.output_dir / f"{stem}.zip"
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(f"{stem}.pdf", pdf.content)
+                if xml is not None and record is not None:
+                    archive.writestr(f"{stem}.xml", xml)
+            return CEPResult(CEPStatus.FOUND, "CEP downloaded", zip_path=zip_path, record=record)
+
+        # PDF, or XML wanted but Banxico's XML couldn't be read: the PDF keeps the proof.
+        pdf_path = self.output_dir / f"{stem}.pdf"
         pdf_path.write_bytes(pdf.content)
-        return CEPResult(CEPStatus.FOUND, "CEP downloaded", pdf_path=pdf_path)
+        return CEPResult(CEPStatus.FOUND, "CEP downloaded", pdf_path=pdf_path, record=record)
+
+    def _download_xml(self) -> tuple[bytes | None, CEPRecord | None]:
+        """The CEP XML of the session's lookup and its data. Never raises: (None, None)
+        if it can't be downloaded, (content, None) if it isn't a CEP XML."""
+        try:
+            resp = self.session.get(
+                self.base_url + "descarga.do", params={"formato": "XML"}, timeout=self.timeout
+            )
+        except requests.RequestException as e:
+            logger.warning("CEP XML download failed: %s", e)
+            return None, None
+        if resp.status_code != 200:
+            return None, None
+        try:
+            return resp.content, parse_cep_xml(resp.content)
+        except ValueError as e:
+            logger.warning("Couldn't read the CEP XML: %s", e)
+            return resp.content, None

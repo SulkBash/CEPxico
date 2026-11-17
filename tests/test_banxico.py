@@ -39,11 +39,14 @@ class FakeSession:
     headers: dict = field(default_factory=dict)
     cookies: requests.cookies.RequestsCookieJar = field(default_factory=requests.cookies.RequestsCookieJar)
     calls: list[str] = field(default_factory=list)
+    xml: FakeResponse | None = None  # descarga.do?formato=XML; None = not available
 
     def get(self, url, params=None, **_kwargs):
-        self.calls.append(url)
+        self.calls.append(url + (f"?formato={params['formato']}" if params and "formato" in params else ""))
         if url.endswith("instituciones.do"):
             return FakeResponse(json_data=self.catalog_json)
+        if url.endswith("descarga.do") and params and params.get("formato") == "XML":
+            return self.xml or FakeResponse(status_code=404, text="Not Found")
         if url.endswith("descarga.do"):
             return self.pdf
         return FakeResponse(text="<html>cep</html>")

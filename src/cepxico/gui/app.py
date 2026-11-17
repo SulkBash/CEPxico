@@ -18,12 +18,15 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageGrab
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
+from cepxico.banxico import Party
 from cepxico.extraction import SUPPORTED_EXTENSIONS, correct_payment
 from cepxico.gui import theme
 from cepxico.gui.fields_dialog import FieldsDialog
-from cepxico.models import FIELD_LABELS, PaymentData
+from cepxico.gui.settings_dialog import SettingsDialog
+from cepxico.models import EDITABLE_LABELS, FIELD_LABELS, PaymentData
 from cepxico.pipeline import FileResult, Outcome
 from cepxico.pipeline import process_files as run_batch
+from cepxico.settings import Settings, load_settings, save_settings
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,7 @@ class ItemStatus(Enum):
     PROCESSING = ("Processing", "status_processing")
     SUCCESS = ("Success", "status_success")
     NOT_FOUND = ("Not Found", "status_notfound")
+    REVIEW = ("Review", "status_review")
     FAILED = ("Failed", "status_failed")
     CANCELLED = ("Cancelled", "status_cancelled")
 
@@ -44,6 +48,7 @@ class ItemStatus(Enum):
 OUTCOME_STATUS = {
     Outcome.SUCCESS: ItemStatus.SUCCESS,
     Outcome.NOT_FOUND: ItemStatus.NOT_FOUND,
+    Outcome.REVIEW: ItemStatus.REVIEW,
     Outcome.FAILED: ItemStatus.FAILED,
 }
 FINISHED_STATUSES = frozenset(OUTCOME_STATUS.values())
@@ -69,9 +74,9 @@ class QueueItem:
 
 
 def can_edit(item: QueueItem) -> bool:
-    """Fields can be typed in for receipts that failed or weren't found at Banxico, and
-    edited again until they're checked."""
-    if item.status in (ItemStatus.FAILED, ItemStatus.NOT_FOUND):
+    """Fields can be typed in for receipts that failed, weren't found at Banxico or need
+    review, and edited again until they're checked."""
+    if item.status in (ItemStatus.FAILED, ItemStatus.NOT_FOUND, ItemStatus.REVIEW):
         return True
     return item.corrected is not None and item.status in (ItemStatus.PENDING, ItemStatus.CANCELLED)
 
@@ -86,8 +91,8 @@ def is_confirmed(item: QueueItem) -> bool:
     return (
         item.status is ItemStatus.SUCCESS
         and cep is not None
-        and cep.pdf_path is not None
-        and cep.pdf_path.is_file()
+        and cep.saved_path is not None
+        and cep.saved_path.is_file()
     )
 
 
@@ -95,6 +100,7 @@ class CEPApp(TkinterDnD.Tk):
     def __init__(self, cep_dir: Path):
         super().__init__()
         self.cep_dir = Path(cep_dir)
+        self.settings = load_settings()
         self.items: dict[str, QueueItem] = {}  # insertion-ordered queue, keyed by file path
         self._path_by_tree_id: dict[str, str] = {}
         self._temp_files: list[str] = []  # pasted clipboard images, deleted on exit
@@ -113,7 +119,7 @@ class CEPApp(TkinterDnD.Tk):
 
         self.stat_vars = {
             name: tk.StringVar(value="0")
-            for name in ("loaded", "processed", "success", "notfound", "failed", "pending")
+            for name in ("loaded", "processed", "success", "review", "notfound", "failed", "pending")
         }
         self.status_var = tk.StringVar(value="Ready")
         self.progress_label_var = tk.StringVar(value="0 / 0")
@@ -157,6 +163,7 @@ class CEPApp(TkinterDnD.Tk):
             ("Loaded", "loaded"),
             ("Processed", "processed"),
             ("CEP Found", "success"),
+            ("Needs Review", "review"),
             ("Not Found at Banxico", "notfound"),
             ("Failed", "failed"),
         ]
@@ -177,6 +184,7 @@ class CEPApp(TkinterDnD.Tk):
         theme.make_button(bar, "Edit Fields", self.edit_selected).pack(side=tk.LEFT, padx=5)
         theme.make_button(bar, "Clear All", self.clear_files, variant="danger").pack(side=tk.LEFT, padx=5)
         theme.make_button(bar, "Open CEP Folder", self.open_cep_folder).pack(side=tk.LEFT, padx=5)
+        theme.make_button(bar, "Settings", self.open_settings).pack(side=tk.LEFT, padx=5)
         self.process_button = theme.make_button(bar, "Process Files", self.process_files, variant="primary")
         self.process_button.pack(side=tk.RIGHT, padx=5)
         self.cancel_button = theme.make_button(bar, "Cancel", self.cancel_processing, state=tk.DISABLED)
@@ -345,6 +353,21 @@ class CEPApp(TkinterDnD.Tk):
         self.cep_dir.mkdir(parents=True, exist_ok=True)
         os.startfile(self.cep_dir)  # noqa: S606 - Windows-only app
 
+    def open_settings(self) -> None:
+        if self._refuse_if_busy():
+            return
+        SettingsDialog(self, settings=self.settings, on_save=self.apply_settings)
+
+    def apply_settings(self, settings: Settings) -> str | None:
+        """Saves new settings; they apply from the next check. Returns a problem, or None."""
+        try:
+            save_settings(settings)
+        except OSError as e:
+            return f"Couldn't save the settings: {e}"
+        self.settings = settings
+        self.status_var.set("Settings saved")
+        return None
+
     # ------------------------------------------------------------------ typing in fields
 
     def _selected_item(self) -> QueueItem | None:
@@ -360,7 +383,8 @@ class CEPApp(TkinterDnD.Tk):
             return
         if not can_edit(item):
             messagebox.showinfo(
-                "Edit Fields", "Fields can be edited for files that failed or weren't found at Banxico."
+                "Edit Fields",
+                "Fields can be edited for files that failed, weren't found at Banxico or need review.",
             )
             return
 
@@ -390,6 +414,7 @@ class CEPApp(TkinterDnD.Tk):
     def _initial_values(self, item: QueueItem) -> dict[str, str]:
         payment = self._current_payment(item)
         values = {name: getattr(payment, name) or "" for name in FIELD_LABELS}
+        values["pago_a_banco"] = "1" if payment.pago_a_banco else ""
         # Show the banks the app identified when the receipt doesn't name them.
         result = item.result
         if result and result.sender and not values["sender_bank"]:
@@ -434,6 +459,9 @@ class CEPApp(TkinterDnD.Tk):
         def show(value: object) -> str:
             return str(value) if value else "N/A"
 
+        cep = result.cep if result else None
+        pago_a_banco = bool(payment and payment.pago_a_banco)
+        account_label = "Cuenta ordenante" if pago_a_banco else "Cuenta"
         lines = [
             f"Path: {item.path}",
             f"Status: {item.status.label}",
@@ -441,16 +469,37 @@ class CEPApp(TkinterDnD.Tk):
             "",
             f"Fecha: {show(payment and payment.payment_date)}",
             f"Rastreo: {show(payment and payment.tracking_key)}",
-            f"Cuenta: {show(payment and payment.beneficiary_account)}",
+            f"{account_label}: {show(payment and payment.beneficiary_account)}",
             f"Monto: {show(payment and payment.amount)}",
+        ]
+        if pago_a_banco:
+            lines.append("Pago a banco: paid to the receiving bank itself")
+        lines += [
             "",
             # Bank as identified in Banxico's catalog, and how it was identified.
             f"Emisor: {show(result and result.sender)}",
             f"Receptor: {show(result and result.receiver)}",
-            f"CEP file: {show(result and result.cep and result.cep.pdf_path)}",
         ]
+        if cep and cep.payment_status:
+            lines.append(f"Estado en Banxico: {cep.payment_status}")
+        if cep and cep.record:
+            # Banxico's own record of the transfer, read from the CEP's XML.
+            r = cep.record
+
+            def party(p: Party) -> str:
+                return f"{show(p.name)} ({p.bank}, {show(p.account)})"
+
+            lines += [
+                "",
+                f"Banxico: {r.operation_date} {r.time}",
+                f"Ordenante: {party(r.sender)}",
+                f"Beneficiario: {party(r.beneficiary)}",
+                f"Concepto: {show(r.concept)}",
+            ]
+        if cep and cep.saved_path:  # name only: Open CEP Folder shows where it is
+            lines += ["", f"CEP: {cep.saved_path.name}"]
         if payment and payment.edited_fields:
-            typed = ", ".join(FIELD_LABELS[name] for name in payment.edited_fields)
+            typed = ", ".join(EDITABLE_LABELS[name] for name in payment.edited_fields)
             lines += ["", f"Typed by user: {typed}"]
         if can_edit(item):
             lines += ["", "Double-click the file (or Edit Fields) to correct or fill in fields."]
@@ -479,6 +528,7 @@ class CEPApp(TkinterDnD.Tk):
         self.stat_vars["loaded"].set(str(total))
         self.stat_vars["processed"].set(str(self.processed_count))
         self.stat_vars["success"].set(str(self._count(ItemStatus.SUCCESS)))
+        self.stat_vars["review"].set(str(self._count(ItemStatus.REVIEW)))
         self.stat_vars["notfound"].set(str(self._count(ItemStatus.NOT_FOUND)))
         self.stat_vars["failed"].set(str(self._count(ItemStatus.FAILED)))
         self.stat_vars["pending"].set(str(self._count(ItemStatus.PENDING)))
@@ -540,7 +590,13 @@ class CEPApp(TkinterDnD.Tk):
 
         try:
             results = run_batch(
-                paths, self.cep_dir, on_step=on_step, on_done=on_done, cancel=self._cancel, payments=payments
+                paths,
+                self.cep_dir,
+                on_step=on_step,
+                on_done=on_done,
+                cancel=self._cancel,
+                payments=payments,
+                settings=self.settings,
             )
             skipped = [path for path, result in zip(paths, results, strict=True) if result is None]
             if skipped:
@@ -594,6 +650,7 @@ class CEPApp(TkinterDnD.Tk):
             return [item for item in self.items.values() if item.status is status]
 
         found, not_found = files_with(ItemStatus.SUCCESS), files_with(ItemStatus.NOT_FOUND)
+        review = files_with(ItemStatus.REVIEW)
         failed, skipped = files_with(ItemStatus.FAILED), files_with(ItemStatus.CANCELLED)
 
         lines = [
@@ -609,6 +666,9 @@ class CEPApp(TkinterDnD.Tk):
             lines.append(f"Cancelled: {len(skipped)}")
         if found:
             lines.append(f"CEPs saved to: {self.cep_dir}")
+        if review:
+            lines += ["", f"NEEDS REVIEW ({len(review)}) - a real payment, but not a clean confirmation:"]
+            lines += [f"- {os.path.basename(i.path)}: {i.result_text}" for i in review]
         if not_found:
             lines += [
                 "",

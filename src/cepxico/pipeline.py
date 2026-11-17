@@ -10,15 +10,27 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, time, timedelta, timezone
+from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
 from cepxico.banks import Bank, BankCatalog, BankDirectory
-from cepxico.banxico import BanxicoCEPClient, BanxicoError, CatalogCache, CEPResult, CEPStatus
+from cepxico.banxico import (
+    BLOCKED_STATUSES,
+    BanxicoCEPClient,
+    BanxicoError,
+    CatalogCache,
+    CEPFiles,
+    CEPRecord,
+    CEPResult,
+    CEPStatus,
+)
 from cepxico.extraction import extract_payment
 from cepxico.identify import BankMatch, identify_receiver, identify_sender
-from cepxico.models import FIELD_LABELS, PaymentData
+from cepxico.models import PaymentData
+from cepxico.settings import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +39,21 @@ logger = logging.getLogger(__name__)
 DEFAULT_JOBS = 4
 MAX_JOBS = 8
 
+# Banxico's CEP page: "El horario de consulta es de 09:30-23:00 hrs de Lunes a Domingo".
+# Mexico City has had no daylight saving time since 2022, so it's UTC-6 all year.
+MEXICO_CITY = timezone(timedelta(hours=-6), "Mexico City")
+BANXICO_HOURS = (time(9, 30), time(23, 0))
+CLOSED_MESSAGE = (
+    "Banxico's CEP service only answers from 09:30 to 23:00 (Mexico City time); check this receipt then"
+)
+BLOCKED_MESSAGE = "Not checked: Banxico stopped answering lookups for now; try again later"
+
+
+def banxico_open(now: datetime | None = None) -> bool:
+    """Whether it's within the hours Banxico answers CEP lookups."""
+    local = (now or datetime.now(MEXICO_CITY)).astimezone(MEXICO_CITY).time()
+    return BANXICO_HOURS[0] <= local < BANXICO_HOURS[1]
+
 
 class CEPClient(Protocol):
     """What the pipeline needs from BanxicoCEPClient (lets tests use a fake)."""
@@ -34,15 +61,28 @@ class CEPClient(Protocol):
     def get_catalog(self, fecha: str) -> BankCatalog: ...
 
     def download_cep(
-        self, *, fecha: str, clave_rastreo: str, sender: Bank, receiver: Bank, account: str, amount: str
+        self,
+        *,
+        fecha: str,
+        clave_rastreo: str,
+        sender: Bank,
+        receiver: Bank,
+        account: str,
+        amount: str,
+        pago_a_banco: bool = False,
+        cep_files: CEPFiles = CEPFiles.PDF,
     ) -> CEPResult: ...
 
     def close(self) -> None: ...
 
 
 class Outcome(Enum):
-    SUCCESS = "success"  # CEP found and saved: the transfer is real
+    SUCCESS = "success"  # CEP found, saved and matching the receipt: the transfer is real
     NOT_FOUND = "not_found"  # Banxico has no such transfer: check the data, receipt may be fake
+    # A real payment that isn't a clean confirmation: paid to an account that isn't
+    # yours, a CEP that doesn't match the receipt, or a payment without CEP (pending,
+    # cancelled, returned). The message says which.
+    REVIEW = "review"
     FAILED = "failed"  # couldn't check (unreadable file, missing data, network...)
 
 
@@ -57,11 +97,34 @@ class FileResult:
     cep: CEPResult | None = None
 
 
+def _mask(account: str) -> str:
+    return f"…{account[-4:]}"
+
+
+def cep_mismatches(payment: PaymentData, record: CEPRecord) -> list[str]:
+    """Where the CEP's own data contradicts the receipt. Banxico found the CEP with the
+    receipt's data, so any difference means the CEP belongs to another transfer."""
+    problems = []
+    if record.tracking_key.upper() != (payment.tracking_key or "").upper():
+        problems.append(f"clave de rastreo {record.tracking_key}")
+    if payment.amount and Decimal(record.amount) != Decimal(payment.amount):
+        problems.append(f"monto {record.amount}")
+    # The account Banxico was given: the beneficiary's, or the sender's for a pago a
+    # banco. Compared only when both are the same kind (a card payment's CEP may show
+    # the account behind the card).
+    cep_account = record.sender.account if payment.pago_a_banco else record.beneficiary.account
+    account = payment.beneficiary_account or ""
+    if cep_account and len(cep_account) == len(account) and cep_account != account:
+        problems.append(f"{payment.label('beneficiary_account')} {_mask(cep_account)}")
+    return problems
+
+
 def process_file(
     path: Path | str,
     client: CEPClient,
     on_step: Callable[[str], None] | None = None,
     payment: PaymentData | None = None,
+    settings: Settings | None = None,
 ) -> FileResult:
     """Processes one receipt. Never raises: every problem becomes a FAILED result.
 
@@ -70,14 +133,18 @@ def process_file(
     path = Path(path)
     step = on_step or (lambda _msg: None)
     try:
-        return _process(path, client, step, payment)
+        return _process(path, client, step, payment, settings or Settings())
     except Exception as e:  # keep a batch going whatever happens to one file
         logger.exception("Unexpected error processing %s", path.name)
         return FileResult(path, Outcome.FAILED, f"Unexpected error: {e}", payment)
 
 
 def _process(
-    path: Path, client: CEPClient, step: Callable[[str], None], payment: PaymentData | None
+    path: Path,
+    client: CEPClient,
+    step: Callable[[str], None],
+    payment: PaymentData | None,
+    settings: Settings,
 ) -> FileResult:
     if not path.is_file():
         return FileResult(path, Outcome.FAILED, "File not found", payment)
@@ -87,7 +154,7 @@ def _process(
         payment = extract_payment(path)
     missing = payment.missing_fields()
     if missing:
-        reason = payment.error_reason or f"Missing {FIELD_LABELS[missing[0]]}"
+        reason = payment.error_reason or f"Missing {payment.label(missing[0])}"
         return FileResult(path, Outcome.FAILED, reason, payment)
     # Guaranteed by missing_fields(); narrows the types for the checker.
     assert payment.payment_date and payment.tracking_key and payment.beneficiary_account and payment.amount
@@ -134,8 +201,22 @@ def _process(
             receiver,
         )
 
-    def done(outcome: Outcome, message: str, cep: CEPResult) -> FileResult:
+    def done(outcome: Outcome, message: str, cep: CEPResult | None = None) -> FileResult:
         return FileResult(path, outcome, message, payment, sender, receiver, cep)
+
+    accepted = settings.accepted_accounts
+    if accepted is not None:
+        # Checked before asking Banxico: a payment to someone else's account is no
+        # payment to you, real or not, and it saves one of Banxico's limited lookups.
+        if payment.pago_a_banco:
+            message = f"Paid to {receiver.bank.name} itself (pago a banco), not to one of your accounts"
+            return done(Outcome.REVIEW, message)
+        if payment.beneficiary_account not in accepted:
+            return done(
+                Outcome.REVIEW,
+                f"Paid to account {_mask(payment.beneficiary_account)}, which isn't one of your "
+                "accounts (Settings); not checked at Banxico",
+            )
 
     step("Checking at Banxico")
     cep = client.download_cep(
@@ -145,11 +226,20 @@ def _process(
         receiver=receiver.bank,
         account=payment.beneficiary_account,
         amount=payment.amount,
+        pago_a_banco=payment.pago_a_banco,
+        cep_files=settings.cep_files,
     )
     logger.info("%s: Banxico %s - %s", path.name, cep.status.value, cep.message)
 
-    if cep.status is CEPStatus.FOUND and cep.pdf_path:
-        return done(Outcome.SUCCESS, f"CEP saved: {cep.pdf_path.name}", cep)
+    if cep.status is CEPStatus.FOUND and cep.saved_path:
+        if cep.record and (problems := cep_mismatches(payment, cep.record)):
+            return done(Outcome.REVIEW, f"CEP doesn't match the receipt: it shows {', '.join(problems)}", cep)
+        return done(Outcome.SUCCESS, f"CEP saved: {cep.saved_path.name}", cep)
+    if cep.status is CEPStatus.NO_CEP:
+        return done(Outcome.REVIEW, cep.message, cep)
+    if cep.status is not CEPStatus.INPUT_ERROR and not banxico_open():
+        # Outside its hours Banxico's answers say nothing about the receipt.
+        return done(Outcome.FAILED, CLOSED_MESSAGE, cep)
     if cep.status is CEPStatus.NOT_FOUND:
         return done(Outcome.NOT_FOUND, f"No CEP at Banxico: {cep.message}", cep)
     return done(Outcome.FAILED, cep.message, cep)
@@ -165,17 +255,20 @@ def process_files(
     cancel: threading.Event | None = None,
     client_factory: Callable[[CatalogCache], CEPClient] | None = None,
     payments: Mapping[Path | str, PaymentData] | None = None,
+    settings: Settings | None = None,
 ) -> list[FileResult | None]:
     """Processes receipts `jobs` at a time and returns their results in input order.
 
     `payments` maps paths (as given) to data to use instead of reading those files,
     such as fields the user corrected.
     Once `cancel` is set, files not yet started are skipped (None in the results);
-    files in progress finish. Callbacks receive each path exactly as given and run on
-    worker threads. Each worker thread gets its own Banxico session (see
-    BanxicoCEPClient for why sharing one would mix up CEPs); bank catalogs are shared.
+    files in progress finish. Once Banxico refuses lookups (too many of them), files not
+    yet started fail without asking it again. Callbacks receive each path exactly as
+    given and run on worker threads. Each worker thread gets its own Banxico client
+    (see BanxicoCEPClient for why sharing one would mix up CEPs); bank catalogs are shared.
     """
     jobs = max(1, min(jobs, MAX_JOBS, len(paths) or 1))
+    blocked = threading.Event()
     catalogs = CatalogCache()
     make_client = client_factory or (lambda cache: BanxicoCEPClient(output_dir, catalogs=cache))
     local = threading.local()
@@ -195,7 +288,12 @@ def process_files(
             return None
         step = (lambda message: on_step(path, message)) if on_step else None
         payment = payments.get(path) if payments else None
-        result = process_file(path, thread_client(), on_step=step, payment=payment)
+        if blocked.is_set():
+            result = FileResult(Path(path), Outcome.FAILED, BLOCKED_MESSAGE, payment)
+        else:
+            result = process_file(path, thread_client(), on_step=step, payment=payment, settings=settings)
+            if result.cep and result.cep.status in BLOCKED_STATUSES:
+                blocked.set()
         if on_done:
             on_done(path, result)
         return result

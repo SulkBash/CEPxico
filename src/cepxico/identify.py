@@ -4,6 +4,9 @@ Deciding which banks a transfer went between.
 Receiving bank: the CLABE's first 3 digits if it's a valid CLABE, else the receipt's
 "Banco destino/receptor" field.
 
+Pago a banco (paid to the receiving bank itself): the account is the *ordering* one, so
+its CLABE identifies the sending bank instead, and the receiving bank must be named.
+
 Sending bank, first clue that works wins:
   1. the receipt's "Banco emisor/origen" field
   2. a clave de rastreo prefix known to belong to one bank
@@ -42,7 +45,7 @@ class BankMatch:
 
 
 def identify_receiver(payment: PaymentData, directory: BankDirectory) -> BankMatch | None:
-    if bank := directory.catalog.by_clabe(payment.beneficiary_account):
+    if not payment.pago_a_banco and (bank := directory.catalog.by_clabe(payment.beneficiary_account)):
         return BankMatch(bank, BankSource.CLABE)
     if bank := directory.resolve(payment.receiver_bank):
         return BankMatch(bank, BankSource.LABEL)
@@ -50,6 +53,8 @@ def identify_receiver(payment: PaymentData, directory: BankDirectory) -> BankMat
 
 
 def identify_sender(payment: PaymentData, directory: BankDirectory, *, receiver: Bank) -> BankMatch | None:
+    if payment.pago_a_banco and (bank := directory.catalog.by_clabe(payment.beneficiary_account)):
+        return BankMatch(bank, BankSource.CLABE)
     if bank := directory.resolve(payment.sender_bank):
         return BankMatch(bank, BankSource.LABEL)
 
