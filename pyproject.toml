@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]  # 77: SPDX license expressions
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "cepxico"
 version = "2.1.0"
 description = "Extracts SPEI transfer data from receipts and downloads the matching CEP from Banxico."
 readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "pymupdf>=1.23",  # PDF text, and rendering scanned PDFs for OCR

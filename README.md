@@ -318,3 +318,13 @@ translation, a translation whose `{placeholders}` differ, or a leftover translat
   clears the old checks.
 - Text looks slightly soft on Windows with display scaling above 100%: the app doesn't
   declare itself DPI-aware, so Windows stretches it.
+
+## License
+
+[GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later).
+
+Anyone may use, study, change and share CEPxico, including commercially. Whoever shares
+a changed version, or offers one to others over a network (a website, an API, a bot),
+must make its source available under the same license. Using the app to check your own
+receipts carries no obligation. PyMuPDF, which reads the PDFs, is itself AGPL-3.0, so
+the built app is AGPL as a whole either way.

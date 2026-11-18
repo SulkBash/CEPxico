@@ -23,7 +23,9 @@ if _conda_bin.is_dir():
     os.environ["PATH"] = f"{_conda_bin}{os.pathsep}{os.environ.get('PATH', '')}"
 
 DATAS = (
-    collect_data_files("cepxico")  # data/banks.toml
+    # The AGPL travels with every copy of the app (its source is the GitHub repository).
+    [(str(Path(SPECPATH).parent / "LICENSE"), ".")]
+    + collect_data_files("cepxico")  # data/banks.toml
     + collect_data_files("rapidocr")  # bundled ONNX models and their YAML configs
     + collect_data_files("tkinterdnd2")  # tkdnd native library for drag & drop
 )
