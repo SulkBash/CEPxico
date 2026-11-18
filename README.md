@@ -4,51 +4,39 @@
 
 # CEPxico
 
-**Is that SPEI transfer real? Drop in the receipt and let Banxico answer.**
+Checks SPEI transfer receipts against Banxico.
 
-[![Tests](https://github.com/SulkBash/CEPxico/actions/workflows/tests.yml/badge.svg)](https://github.com/SulkBash/CEPxico/actions/workflows/tests.yml)
-[![Latest release](https://img.shields.io/github/v/release/SulkBash/CEPxico?label=download&color=23A05A)](https://github.com/SulkBash/CEPxico/releases/latest)
-![Windows · macOS · Linux](https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-1F3A5F)
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3B7DED)
-[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-8A9BB5)](LICENSE)
-
-[**Download**](https://github.com/SulkBash/CEPxico/releases/latest) · [Guide](docs/GUIDE.md) · [Contributing](CONTRIBUTING.md)
+[Download](https://github.com/SulkBash/CEPxico/releases/latest) · [Guide](docs/GUIDE.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
 <p align="center">
   <img src="docs/demo-check.gif" alt="Five receipts dropped on CEPxico and checked: three confirmed, one not found at Banxico, one flagged because the same transfer was already used on another receipt">
-  <br><sub>Sample receipts with invented data.</sub>
 </p>
 
-Screenshots of transfers are easy to fake. CEPxico reads the receipt you were sent (PDF,
-screenshot or phone photo), pulls out the transfer data and asks Banxico's
-[CEP service](https://www.banxico.org.mx/cep/) for the official *Comprobante Electrónico de
-Pago*. If Banxico has it, the money really moved, and you keep the signed CEP as proof.
+CEPxico takes a SPEI receipt (a PDF, a screenshot or a photo), reads the transfer data
+from it and looks the transfer up in Banxico's [CEP service](https://www.banxico.org.mx/cep/).
+If Banxico finds it, the transfer went through, and CEPxico saves the CEP (Comprobante
+Electrónico de Pago) that Banxico issues for it.
 
 ## Features
 
-- 📄 **Any receipt.** PDFs, screenshots, phone photos taken at an angle, pasted images.
-  OCR is built in and works offline.
-- 🏦 **Every bank.** Banks are identified from Banxico's own catalog for the payment date,
-  so renames and new banks just work.
-- ✅ **Proof, not guesses.** Downloads the CEP (PDF, signed XML, or both) and compares it
-  with the receipt: clave de rastreo, amount and account.
-- 🔁 **Catches reused receipts.** A real receipt forwarded twice, or last week's sent
-  again, is flagged instead of passing.
-- ⚡ **Batches.** Drop a whole folder; receipts are checked 4 at a time.
-- 🖥️ **Desktop app and command line**, in Spanish or English.
-- 🔒 **Private.** Runs on your computer and talks only to Banxico. Nothing is uploaded
-  anywhere else.
+- Reads PDFs, screenshots, phone photos and pasted images. OCR runs on your computer.
+- Identifies the sending and receiving banks using Banxico's bank catalog for the
+  payment date.
+- Saves the CEP as a PDF, an XML file or both, and compares it with the receipt (clave de
+  rastreo, amount and account).
+- Flags a transfer that was already confirmed for a different receipt file.
+- Checks several receipts at once (4 by default).
+- Desktop app and command line, in Spanish or English, for Windows, macOS and Linux.
 
-Every receipt ends up **Confirmed**, **Review** (real, but something's off: paid to
-another account, already used…), **Not Found** (Banxico has no such transfer: likely
-fake) or **Error** (couldn't check). [What each one means →](docs/GUIDE.md#results)
+Each receipt gets one of four results: Confirmed, Review, Not Found or Error. The
+[guide](docs/GUIDE.md#results) explains each one.
 
-### Fill in what the receipt hides
+### Editing fields
 
-Some banks print the account as `***756`. Double-click the receipt, type what's missing,
-and check again.
+If a field can't be read, or the receipt doesn't show it (some banks hide most of the
+account number), you can type it in Edit Fields and check the receipt again.
 
 <p align="center">
   <img src="docs/demo-edit.gif" alt="A receipt that shows only the end of the account fails; the account is typed in Edit Fields and the receipt is confirmed">
@@ -56,8 +44,9 @@ and check again.
 
 ## Install
 
-**Download the app** from the [latest release](https://github.com/SulkBash/CEPxico/releases/latest).
-No Python needed: unzip it and open `cepxico-gui` (`CEPxico.app` on a Mac).
+Download the file for your system from the
+[latest release](https://github.com/SulkBash/CEPxico/releases/latest) and unzip it. Python
+isn't needed. Open `cepxico-gui`, or `CEPxico.app` on a Mac.
 
 | System | File |
 |---|---|
@@ -65,11 +54,12 @@ No Python needed: unzip it and open `cepxico-gui` (`CEPxico.app` on a Mac).
 | macOS (Apple silicon) | `CEPxico-<version>-macos-arm64.zip` |
 | Linux (x64, glibc 2.35+) | `CEPxico-<version>-linux-x64.tar.gz` |
 
-The app isn't code-signed yet. On Windows, click **More info → Run anyway** the first
-time; on macOS, right-click the app and choose **Open**.
+The builds aren't code-signed, so Windows and macOS warn the first time you open them. On
+Windows, click **More info**, then **Run anyway**. On macOS, try to open the app once, then
+go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
 <details>
-<summary><b>Or install from source</b> (Python 3.11+)</summary>
+<summary>Install from source (Python 3.11+)</summary>
 
 ```bash
 git clone https://github.com/SulkBash/CEPxico.git && cd CEPxico
@@ -78,40 +68,50 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-- **Linux:** Qt also needs `libxcb-cursor0` (`sudo apt install libxcb-cursor0`).
-- **Windows with Anaconda's Python:** PySide6 6.10+ fails with "DLL load failed"; use
-  `pip install "PySide6-Essentials<6.10"`.
+- On Linux, Qt also needs `libxcb-cursor0` (`sudo apt install libxcb-cursor0`).
+- With Anaconda's Python on Windows, PySide6 6.10 and later fail with "DLL load failed".
+  Install `pip install "PySide6-Essentials<6.10"` instead.
 
 </details>
 
 ## Use
 
-**Desktop app:** open `cepxico-gui`, drop receipts on the window (or paste a screenshot)
-and press **Check**. CEPs are saved to `~/Downloads/CEPs/`.
+In the desktop app, drop receipts on the window (or paste a screenshot) and click
+**Check**. CEPs are saved to `~/Downloads/CEPs/`.
 
-**Command line:**
+From the command line:
 
 ```bash
 cepxico receipt1.pdf receipt2.png     # exit code 0 only if every CEP was found
-cepxico D:\Receipts --csv results.csv # a whole folder, with a CSV of the results
+cepxico D:\Receipts --csv results.csv # every receipt in a folder, results also saved as CSV
 ```
 
-Settings, history, keyboard shortcuts, dollar transfers (SPID) and every CLI option are
-in the [guide](docs/GUIDE.md).
+The [guide](docs/GUIDE.md) covers settings, history, keyboard shortcuts, dollar transfers
+(SPID) and all command-line options.
+
+## Privacy
+
+CEPxico only connects to Banxico's CEP service (`banxico.org.mx`), and only to check
+receipts you add. For each receipt it sends the fields Banxico's web form asks for: date,
+clave de rastreo, sending and receiving bank, account and amount, plus the security code
+you type for dollar transfers. It also downloads Banxico's bank list for the payment date.
+There is no telemetry and no update check.
+
+Receipts, settings, the [history](docs/GUIDE.md#history), the log and saved CEPs stay on
+your computer. The log shortens account numbers and claves de rastreo to their last 4
+characters.
 
 ## Contributing
 
-Bug reports and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) explains
-the setup, how the code fits together and how to teach CEPxico a new bank's receipts.
-Please never attach real receipts or CEPs: they contain account numbers.
+Bug reports and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers
+setup, an overview of the code and how to add support for a bank's receipts. Don't attach
+real receipts or CEPs to issues; they contain account numbers.
 
 ## License
 
-[AGPL-3.0-or-later](LICENSE). Anyone may use, study, change and share CEPxico, including
-commercially. Whoever shares a changed version, or offers one to others over a network (a
-website, an API, a bot), must make its source available under the same license. Using
-the app to check your own receipts carries no obligation. PyMuPDF, which reads the PDFs,
-is itself AGPL-3.0, so the built app is AGPL as a whole either way.
+[AGPL-3.0-or-later](LICENSE). If you distribute a modified version, or run one as a
+service for other people, you must publish its source under the same license. Using
+CEPxico to check your own receipts has no such requirement. PyMuPDF, which CEPxico uses
+to read PDFs, is also AGPL-3.0.
 
-<sub>CEPxico is an independent project, not affiliated with or endorsed by Banco de
-México. It uses Banxico's public CEP service the same way its web page does.</sub>
+<sub>CEPxico is not affiliated with Banco de México.</sub>

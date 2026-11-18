@@ -144,8 +144,8 @@ anyway"), and macOS Gatekeeper needs right-click → Open the first time.
 
 ## Make a release
 
-1. Set the version in `pyproject.toml`, `src/cepxico/__init__.py` and
-   `packaging/cepxico.spec` (`CFBundleShortVersionString`).
+1. Set the version in `pyproject.toml` and `src/cepxico/__init__.py`. The build reads it
+   from there into the Windows file details and the macOS app.
 2. Publish a GitHub release with a `vX.Y.Z` tag. `.github/workflows/release.yml` builds
    the app on Windows, macOS and Linux and attaches the three downloads to it. (Run it by
    hand from the Actions tab for a test build without a release.)

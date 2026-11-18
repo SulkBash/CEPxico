@@ -12,6 +12,7 @@ and the command line in detail, settings, history, and dollar transfers.
 - [History](#history)
 - [Dollar transfers (SPID)](#dollar-transfers-spid)
 - [Known gaps](#known-gaps)
+- [Uninstall](#uninstall)
 - [Reporting a bug](#reporting-a-bug)
 
 ## Results
@@ -184,6 +185,17 @@ account too. CEPs are saved as `CEP_SPID_<date>_<clave>`.
   [receipts used twice](#receipts-used-twice)). Moving a folder of already-checked
   receipts and checking them again therefore marks them Review; **Forget** in History
   clears the old checks.
+
+## Uninstall
+
+CEPxico installs nothing outside its own folder, so removing it takes two steps:
+
+1. Delete the app: the unzipped `cepxico` folder (Windows, Linux) or `CEPxico.app` (Mac).
+   Installed from source instead? Run `pip uninstall cepxico`.
+2. To also erase your settings, history and log, delete the [data folder](#settings).
+   Settings → Data folder → Open shows where it is.
+
+Saved CEPs in `~/Downloads/CEPs/` (or your own `--out` folder) are yours to keep or delete.
 
 ## Reporting a bug
 

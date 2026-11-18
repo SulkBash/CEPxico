@@ -9,10 +9,54 @@
 # A folder (not --onefile) starts quickly; onefile would unpack everything to a temp
 # folder on every launch.
 import os
+import re
 import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
+
+# The one place the version is written (src/cepxico/__init__.py), read as text so the
+# build doesn't depend on which cepxico is installed.
+VERSION = re.search(
+    r'__version__ = "([^"]+)"', (Path(SPECPATH).parent / "src" / "cepxico" / "__init__.py").read_text()
+).group(1)
+
+
+def windows_version_info(name, description):
+    """Version details Windows shows in the file's Properties → Details, and code signing
+    services check: the product is CEPxico, at the same version in every executable."""
+    if sys.platform != "win32":
+        return None
+    from PyInstaller.utils.win32.versioninfo import (
+        FixedFileInfo,
+        StringFileInfo,
+        StringStruct,
+        StringTable,
+        VarFileInfo,
+        VarStruct,
+        VSVersionInfo,
+    )
+
+    numbers = tuple(int(n) for n in re.findall(r"\d+", VERSION))[:4]
+    numbers += (0,) * (4 - len(numbers))  # Windows wants four: 2.1.0 -> 2.1.0.0
+    strings = {
+        "CompanyName": "CEPxico",
+        "FileDescription": description,
+        "FileVersion": VERSION,
+        "InternalName": name,
+        "LegalCopyright": "AGPL-3.0-or-later. https://github.com/SulkBash/CEPxico",
+        "OriginalFilename": f"{name}.exe",
+        "ProductName": "CEPxico",
+        "ProductVersion": VERSION,
+    }
+    return VSVersionInfo(
+        ffi=FixedFileInfo(filevers=numbers, prodvers=numbers),
+        kids=[
+            StringFileInfo([StringTable("040904B0", [StringStruct(k, v) for k, v in strings.items()])]),
+            VarFileInfo([VarStruct("Translation", [0x0409, 1200])]),
+        ],
+    )
+
 
 # On a venv made from Anaconda's Python, the DLLs that _ctypes, _bz2, _lzma, pyexpat and
 # _ssl load (ffi-8.dll, ...) live in <conda>/Library/bin. PyInstaller only looks there
@@ -72,7 +116,7 @@ def keep(entries):
     return [e for e in entries if needed(e[0])]
 
 
-def build(script, name, console):
+def build(script, name, console, description):
     analysis = Analysis([script], datas=DATAS, excludes=EXCLUDES)
     analysis.binaries = keep(analysis.binaries)
     analysis.datas = keep(analysis.datas)
@@ -82,13 +126,14 @@ def build(script, name, console):
         exclude_binaries=True,
         name=name,
         console=console,
+        version=windows_version_info(name, description),
         upx=False,
     )
     return analysis, exe
 
 
-cli, cli_exe = build("cepxico_cli.py", "cepxico", console=True)
-gui, gui_exe = build("cepxico_gui.py", "cepxico-gui", console=False)
+cli, cli_exe = build("cepxico_cli.py", "cepxico", console=True, description="CEPxico command line")
+gui, gui_exe = build("cepxico_gui.py", "cepxico-gui", console=False, description="CEPxico")
 
 # On macOS the app bundle starts the first executable, so the desktop app goes first.
 executables = [gui_exe, cli_exe] if sys.platform == "darwin" else [cli_exe, gui_exe]
@@ -105,5 +150,5 @@ if sys.platform == "darwin":
         folder,
         name="CEPxico.app",
         bundle_identifier="mx.cepxico.app",
-        info_plist={"NSHighResolutionCapable": True, "CFBundleShortVersionString": "2.1.0"},
+        info_plist={"NSHighResolutionCapable": True, "CFBundleShortVersionString": VERSION},
     )
