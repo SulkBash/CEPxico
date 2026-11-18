@@ -39,12 +39,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cepxico",
         description=tr(
-            "Extract SPEI transfer data from receipts and download their CEP from Banxico. "
-            "Run without files to open the desktop app."
+            "Check SPEI receipts with Banxico and download their CEPs. Without files, opens the desktop app."
         ),
         epilog=tr(
-            "Settings made in the desktop app (own accounts, files to save, language) also apply "
-            "here: {settings}. Every check is recorded in {history}.",
+            "Uses the desktop app's settings ({settings}) and history ({history}).",
             settings=settings_path(),
             history=history_path(),
         ),
@@ -70,29 +68,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--save",
         choices=[f.value for f in CEPFiles],
-        help=tr(
-            "what to save for each CEP: the PDF, the XML, or both in one ZIP "
-            "(default: as set in the desktop app)"
-        ),
+        help=tr("CEP files to save (default: as in Settings)"),
     )
-    parser.add_argument(
-        "--csv", type=Path, metavar="FILE", help=tr("also write this run's results to a CSV file")
-    )
+    parser.add_argument("--csv", type=Path, metavar="FILE", help=tr("also save this run's results as CSV"))
     parser.add_argument(
         "--export-history",
         type=Path,
         metavar="FILE",
-        help=tr("write every check ever made to a CSV file, and exit"),
+        help=tr("save the whole history as CSV and exit"),
     )
     parser.add_argument(
         "--no-history",
         action="store_true",
-        help=tr(
-            "don't record this run, and don't flag receipts for transfers already confirmed for "
-            "another receipt"
-        ),
+        help=tr("don't use or update the history (no used-twice check)"),
     )
-    parser.add_argument("--lang", choices=["es", "en"], help=tr("language of the messages (default: as set)"))
+    parser.add_argument("--lang", choices=["es", "en"], help=tr("message language (default: as in Settings)"))
     parser.add_argument("-v", "--verbose", action="store_true", help=tr("show debug output"))
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
@@ -154,8 +144,7 @@ def terminal_ask_code(request: CodeRequest) -> str | None:
     print()
     print(
         tr(
-            "{file}: dollar transfer (SPID) of {amount}. Banxico's CEP-SPID service asks for the "
-            "characters in a security image.",
+            "{file}: dollar transfer (SPID) of {amount}; Banxico asks for a security code.",
             file=request.file_name,
             amount=request.amount,
         )
@@ -163,7 +152,7 @@ def terminal_ask_code(request: CodeRequest) -> str | None:
     if request.retry:
         print(
             tr(
-                "Banxico didn't accept the last code; this is a new image (attempt {attempt} of {max}).",
+                "Wrong code. New image ({attempt} of {max}).",
                 attempt=request.attempt,
                 max=MAX_CODE_ATTEMPTS,
             )
@@ -172,9 +161,9 @@ def terminal_ask_code(request: CodeRequest) -> str | None:
         path = _save_image(image)
         try:
             open_path(path)
-            print(tr("The image is open in your image viewer: {path}", path=path))
+            print(tr("Image opened: {path}", path=path))
         except OSError:
-            print(tr("Open this image to see the code: {path}", path=path))
+            print(tr("Code image: {path}", path=path))
         try:
             code = input(tr("Code (? for another image, Enter to skip): ")).strip()
         except EOFError:
@@ -249,13 +238,13 @@ def print_summary(results: Sequence[FileResult]) -> None:
     by_outcome = {outcome: [r for r in results if r.outcome is outcome] for outcome in Outcome}
     print(f"\n--- {tr('Summary')} ---")
     print(tr("Files: {count}", count=len(results)))
-    print(tr("CEP found and saved: {count}", count=len(by_outcome[Outcome.SUCCESS])))
+    print(tr("Confirmed: {count}", count=len(by_outcome[Outcome.SUCCESS])))
     for r in by_outcome[Outcome.SUCCESS]:
         print(f"  + {r.path.name} -> {r.cep.saved_path if r.cep else ''}")
     if by_outcome[Outcome.REVIEW]:
         print(
             tr(
-                "NEEDS REVIEW (real payment, but not a clean confirmation): {count}",
+                "Review: {count}",
                 count=len(by_outcome[Outcome.REVIEW]),
             )
         )
@@ -264,14 +253,14 @@ def print_summary(results: Sequence[FileResult]) -> None:
     if by_outcome[Outcome.NOT_FOUND]:
         print(
             tr(
-                "NOT FOUND at Banxico (check data; receipt may be fake): {count}",
+                "Not found (receipt may be fake): {count}",
                 count=len(by_outcome[Outcome.NOT_FOUND]),
             )
         )
         for r in by_outcome[Outcome.NOT_FOUND]:
             print(f"  ! {r.path.name}: {r.message}")
     if by_outcome[Outcome.FAILED]:
-        print(tr("Errors / skipped: {count}", count=len(by_outcome[Outcome.FAILED])))
+        print(tr("Errors or not checked: {count}", count=len(by_outcome[Outcome.FAILED])))
         for r in by_outcome[Outcome.FAILED]:
             print(f"  - {r.path.name}: {r.message}")
 

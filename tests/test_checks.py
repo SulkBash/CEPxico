@@ -90,7 +90,7 @@ def test_payment_to_another_account_is_flagged_without_asking_banxico(receipt):
     elsewhere = replace(MINE, own_accounts=(BANORTE_CLABE,))
     result = process_file(receipt, client, payment=COMPLETE, settings=elsewhere)
     assert result.outcome is Outcome.REVIEW
-    assert f"…{BBVA_CLABE[-4:]}" in result.message and "isn't one of your accounts" in result.message
+    assert f"…{BBVA_CLABE[-4:]}" in result.message and "not one of your accounts" in result.message
     assert client.calls == []
 
 

@@ -11,10 +11,10 @@ Each receipt ends up as one of:
 
 | Result | Meaning |
 |---|---|
-| **Success** | CEP found, its data matches the receipt, and it's saved to `~/Downloads/CEPs/` (PDF, XML or ZIP: see [Settings](#settings)) |
+| **Confirmed** | CEP found, its data matches the receipt, and it's saved to `~/Downloads/CEPs/` (PDF, XML or ZIP: see [Settings](#settings)) |
 | **Review** | A real payment, but not a clean confirmation: paid to an account that isn't yours, a CEP whose data doesn't match the receipt, a payment Banxico has without a CEP (still settling, cancelled, returned), or a transfer already confirmed for another receipt ([receipts used twice](#receipts-used-twice)). The message says which |
 | **Not Found** | Banxico has no transfer with that data. Check the extracted fields; the receipt may be fake |
-| **Failed** | Couldn't check: unreadable file, missing data, network error, Banxico closed or out of lookups, a [dollar transfer (SPID)](#dollar-transfers-spid) whose security code nobody typed… |
+| **Error** | Couldn't check: unreadable file, missing data, network error, Banxico closed or out of lookups, a [dollar transfer (SPID)](#dollar-transfers-spid) whose security code nobody typed… |
 
 ## Install
 
@@ -61,12 +61,12 @@ python -m cepxico                     # same as `cepxico`
 
 `cepxico-gui` opens the desktop app without a console window.
 
-In the desktop app, **Process Files** checks every receipt not yet confirmed; receipts
+In the desktop app, **Check** (F5) checks every receipt not yet confirmed; receipts
 whose CEP was already saved are left alone (remove and re-add one to check it again).
 When a receipt fails or isn't found at Banxico, double-click it (or **Edit Fields**) to
 correct or fill in any field from the receipt, for example an account the receipt only
 shows as `***756`. Results checked with typed fields are marked `[edited]`. Tick
-**Pago a banco** there for a payment made to the receiving bank itself rather than to
+**Paid to the bank itself (pago a banco)** there for a payment made to the receiving bank itself rather than to
 one of its customers; the account field then takes the account the money came from,
 as Banxico asks.
 
@@ -92,14 +92,14 @@ used by the command line:
 `CEPXICO_HOME` overrides the folder, for example for a portable install. Settings shows
 the folder, with a button to open it.
 
-- **Save each CEP as:** PDF (default), XML, or the PDF and XML in one ZIP. The XML
+- **CEP files:** PDF (default), XML, or the PDF and XML in one ZIP. The XML
   is Banxico's digitally signed record of the transfer: it can be checked with
   Banxico's [CEP validator](https://www.banxico.org.mx/validador-cep-spei/) and
   imported by accounting software. If it can't be read, the PDF is saved instead. The
   ZIP is built from the two files already downloaded, so it costs no extra lookup at
   Banxico. `cepxico --save pdf|xml|zip` picks for one run.
 - **Only accept payments to these accounts.** Off by default. A real transfer to
-  someone else's account would otherwise show as Success; with this on, receipts paid
+  someone else's account would otherwise show as Confirmed; with this on, receipts paid
   to any other account are marked Review without asking Banxico. List the debit card
   or phone number too if customers pay to those.
 - **Language:** Español, English, or the system's language (the default; Spanish when
@@ -124,12 +124,12 @@ A real receipt can be shown more than once: two customers forwarding the same
 screenshot, or one customer sending last week's receipt again. Banxico confirms the
 transfer every time, because it did happen. CEPxico remembers which receipt file each
 confirmed transfer was first confirmed for. The same transfer (clave de rastreo, date
-and sending bank) on any other file is marked **Review**: "Receipt already used:
-Banxico confirmed this transfer on 10/11/2026 for juan.png". When the transfer was
+and sending bank) on any other file is marked **Review**: "Already used:
+confirmed on 10/11/2026 for juan.png". When the transfer was
 already confirmed in an earlier check, Banxico isn't asked again.
 
 "The same receipt" means the same file: same path and same content. Checking a
-receipt again from where it is stays Success. A copy under another name or in another
+receipt again from where it is stays Confirmed. A copy under another name or in another
 folder counts as another receipt, because that's exactly what a forwarded receipt
 looks like. Two receipts of one transfer checked in the same batch can't both pass.
 

@@ -50,20 +50,17 @@ SPID_URL = "https://www.banxico.org.mx/cep-spid/"
 
 
 def closed_message() -> str:
-    return tr(
-        "Banxico's CEP service only answers from 09:30 to 23:00 (Mexico City time); check this receipt then"
-    )
+    return tr("Banxico only answers 09:30–23:00 (Mexico City); check then")
 
 
 def blocked_message() -> str:
-    return tr("Not checked: Banxico stopped answering lookups for now; try again later")
+    return tr("Not checked: Banxico stopped answering; try again later")
 
 
 def spid_message() -> str:
     """For a dollar receipt when nobody is there to type Banxico's security image."""
     return tr(
-        "Transfer in dollars (SPID). Banxico's CEP-SPID service asks you to type a security "
-        "image: check it in the desktop app or from a terminal, or look it up at {url}",
+        "Dollar transfer (SPID): needs a security code; check it in the desktop app or at {url}",
         url=SPID_URL,
     )
 
@@ -187,9 +184,9 @@ def reused_message(earlier: Check, *, checked: bool) -> str:
     """For a transfer Banxico already confirmed for another receipt file."""
     values = {"date": earlier.checked_at_text, "file": earlier.file_name}
     if checked:
-        return tr("Receipt already used: Banxico confirmed this transfer on {date} for {file}", **values)
+        return tr("Already used: confirmed on {date} for {file}", **values)
     return tr(
-        "Receipt already used: Banxico confirmed this transfer on {date} for {file}; not checked again",
+        "Already used: confirmed on {date} for {file} (not checked again)",
         **values,
     )
 
@@ -291,7 +288,7 @@ def _process(
         return FileResult(path, Outcome.FAILED, tr("File not found"), payment)
 
     if payment is None:
-        step(tr("Extracting"))
+        step(tr("Reading"))
         payment = extract_payment(path)
     if payment.spid:
         # A different Banxico service; the SPEI one would answer "not found" and make a
@@ -346,7 +343,7 @@ def _process(
             path,
             Outcome.FAILED,
             tr(
-                "Sending and receiving bank are both {bank}; check the extracted fields",
+                "Both banks read as {bank}; check the fields",
                 bank=sender.bank.name,
             ),
             payment,
@@ -363,15 +360,14 @@ def _process(
         # payment to you, real or not, and it saves one of Banxico's limited lookups.
         if payment.pago_a_banco:
             message = tr(
-                "Paid to {bank} itself (pago a banco), not to one of your accounts", bank=receiver.bank.name
+                "Paid to {bank} itself (pago a banco), not to your accounts", bank=receiver.bank.name
             )
             return done(Outcome.REVIEW, message)
         if payment.beneficiary_account not in accepted:
             return done(
                 Outcome.REVIEW,
                 tr(
-                    "Paid to account {account}, which isn't one of your accounts (Settings); "
-                    "not checked at Banxico",
+                    "Paid to {account}, not one of your accounts",
                     account=_mask(payment.beneficiary_account),
                 ),
             )
@@ -400,7 +396,7 @@ def _process(
     if payment.spid and spid is not None:
         found = _spid_lookup(spid, query, payment, path, step)
         if found is None:
-            return done(Outcome.FAILED, tr("Not checked: no security code was typed"))
+            return done(Outcome.FAILED, tr("Not checked: no code typed"))
         cep = found
     else:
         step(tr("Checking at Banxico"))
@@ -418,7 +414,7 @@ def _process(
         # Outside its hours Banxico's answers say nothing about the receipt.
         return done(Outcome.FAILED, closed_message(), cep)
     if cep.status is CEPStatus.NOT_FOUND:
-        return done(Outcome.NOT_FOUND, tr("No CEP at Banxico: {reason}", reason=cep.message), cep)
+        return done(Outcome.NOT_FOUND, tr("Banxico: {reason}", reason=cep.message), cep)
     return done(Outcome.FAILED, cep.message, cep)
 
 
@@ -458,7 +454,7 @@ def _spid_lookup(
     return CEPResult(
         CEPStatus.INPUT_ERROR,
         tr(
-            "Banxico didn't accept the security code {count} times; check the extracted fields and try again",
+            "Code rejected {count} times; check the fields and try again",
             count=MAX_CODE_ATTEMPTS,
         ),
     )

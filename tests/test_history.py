@@ -48,8 +48,8 @@ def test_same_transfer_on_another_receipt_is_flagged_without_asking_banxico(tmp_
 
     assert first.outcome is Outcome.SUCCESS
     assert second.outcome is Outcome.REVIEW
-    assert second.message.startswith("Receipt already used: Banxico confirmed this transfer on ")
-    assert "for juan.pdf; not checked again" in second.message
+    assert second.message.startswith("Already used: confirmed on ")
+    assert "for juan.pdf (not checked again)" in second.message
     assert client.calls == []  # saved a Banxico lookup
 
 
@@ -107,7 +107,7 @@ def test_two_receipts_of_one_transfer_in_the_same_batch_cant_both_pass(tmp_path,
 
     assert sorted(r.outcome.value for r in results) == ["review", "success"]
     review = next(r for r in results if r.outcome is Outcome.REVIEW)
-    assert review.message.startswith("Receipt already used") and "not checked again" not in review.message
+    assert review.message.startswith("Already used") and "not checked again" not in review.message
 
 
 def test_every_check_is_recorded(tmp_path, history):
@@ -154,11 +154,11 @@ def test_csv_opens_cleanly_in_excel(tmp_path):
     values = dict(zip(header, row, strict=True))
     assert values["Checked"] == "17/11/2026 10:05"
     assert values["File"] == "año.pdf"
-    assert values["Result"] == "Success"
+    assert values["Result"] == "Confirmed"
     assert values["Account"] == '="012180001234567893"'  # text, not 1.2E+17
     assert values["Clave de rastreo"] == '="085901234567890123"'
     assert values["Beneficiary"] == "JOSÉ PÉREZ"
-    assert values["Typed by user"] == "yes"
+    assert values["Edited fields"] == "yes"
 
 
 def test_cli_records_history_and_exports_it(tmp_path, monkeypatch):
@@ -173,7 +173,7 @@ def test_cli_records_history_and_exports_it(tmp_path, monkeypatch):
     all_csv = tmp_path / "all.csv"
     assert main(["--export-history", str(all_csv)]) == 0
     rows = list(csv.DictReader(all_csv.open(encoding="utf-8-sig")))
-    assert [(r["File"], r["Result"]) for r in rows] == [("pedro.pdf", "Review"), ("juan.pdf", "Success")]
+    assert [(r["File"], r["Result"]) for r in rows] == [("pedro.pdf", "Review"), ("juan.pdf", "Confirmed")]
     assert [r["File"] for r in csv.DictReader(run_csv.open(encoding="utf-8-sig"))] == ["juan.pdf"]
 
 

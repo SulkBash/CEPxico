@@ -63,7 +63,7 @@ def extracted(monkeypatch):
             Outcome.SUCCESS,
             "CEP saved: CEP_x.pdf",
         ),
-        (CEPResult(CEPStatus.NOT_FOUND, "No existe"), Outcome.NOT_FOUND, "No CEP at Banxico: No existe"),
+        (CEPResult(CEPStatus.NOT_FOUND, "No existe"), Outcome.NOT_FOUND, "Banxico: No existe"),
         (CEPResult(CEPStatus.CAPTCHA, "captcha"), Outcome.FAILED, "captcha"),
         (CEPResult(CEPStatus.ERROR, "timeout"), Outcome.FAILED, "timeout"),
     ],
@@ -77,7 +77,7 @@ def test_outcomes(receipt, extracted, cep, outcome, message_start):
 
     assert result.outcome is outcome
     assert result.message.startswith(message_start)
-    assert steps == ["Extracting", "Identifying banks", "Checking at Banxico"]
+    assert steps == ["Reading", "Identifying banks", "Checking at Banxico"]
     assert client.calls[0]["sender"] == Bank("40072", "BANORTE")
     assert client.calls[0]["receiver"] == Bank("40012", "BBVA MEXICO")
     assert result.sender.source is BankSource.LABEL
@@ -103,7 +103,7 @@ def test_same_bank_on_both_sides_skips_banxico(receipt, extracted):
     result = process_file(receipt, client)
 
     assert result.outcome is Outcome.FAILED
-    assert result.message.startswith("Sending and receiving bank are both BBVA MEXICO")
+    assert result.message.startswith("Both banks read as BBVA MEXICO")
     assert result.sender.bank == result.receiver.bank == Bank("40012", "BBVA MEXICO")
     assert client.calls == []
 
@@ -253,7 +253,7 @@ class TestProcessFiles:
             [path], extracted, on_step=lambda p, s: steps.append((p, s)), on_done=lambda p, r: done.append(p)
         )
         assert done == [path]
-        assert steps[0] == (path, "Extracting")
+        assert steps[0] == (path, "Reading")
 
     def test_cancel_skips_files_not_started(self, tmp_path, extracted):
         paths = [tmp_path / f"r{i}.pdf" for i in range(6)]

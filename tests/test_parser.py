@@ -278,8 +278,8 @@ def test_clean_field(name, raw, expected):
 @pytest.mark.parametrize(
     ("name", "raw", "problem"),
     [
-        ("payment_date", "31/02/2026", "valid date"),
-        ("payment_date", "ayer", "valid date"),
+        ("payment_date", "31/02/2026", "isn't a date"),
+        ("payment_date", "ayer", "isn't a date"),
         ("tracking_key", "A" * 31, "1 to 30"),
         ("beneficiary_account", "***************756", "digits only"),
         ("beneficiary_account", "12345", "has 5 digits"),

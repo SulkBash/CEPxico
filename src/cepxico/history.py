@@ -172,10 +172,10 @@ def _check(row: Sequence[object]) -> Check:
 
 def outcome_label(outcome: str) -> str:
     labels = {
-        "success": tr("Success"),
+        "success": tr("Confirmed"),
         "review": tr("Review"),
         "not_found": tr("Not Found"),
-        "failed": tr("Failed"),
+        "failed": tr("Error"),
     }
     return labels.get(outcome, outcome)
 
@@ -196,7 +196,7 @@ def csv_columns() -> list[tuple[str, str]]:
         ("beneficiary_name", tr("Beneficiary")),
         ("account", tr("Account")),
         ("cep_file", tr("CEP file")),
-        ("edited", tr("Typed by user")),
+        ("edited", tr("Edited fields")),
         ("file_path", tr("File path")),
     ]
 

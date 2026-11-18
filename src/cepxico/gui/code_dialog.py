@@ -47,12 +47,7 @@ class CodeDialog(QDialog):
         column = QVBoxLayout(self)
         column.addWidget(
             theme.wrapped(
-                tr(
-                    "Dollar transfer (SPID) of {amount}, clave de rastreo {clave}. Banxico's CEP-SPID "
-                    "service asks for the characters in this image before it answers.",
-                    amount=request.amount,
-                    clave=request.tracking_key,
-                ),
+                tr("Type the characters in the image to check this dollar transfer."),
                 WRAP,
             )
         )
@@ -60,7 +55,7 @@ class CodeDialog(QDialog):
             retry = theme.error_label()
             retry.setText(
                 tr(
-                    "Banxico didn't accept the last code. Try this new image (attempt {attempt} of {max}).",
+                    "Wrong code. Try this one ({attempt} of {max}).",
                     attempt=request.attempt,
                     max=MAX_CODE_ATTEMPTS,
                 )
@@ -91,7 +86,7 @@ class CodeDialog(QDialog):
 
         buttons = QDialogButtonBox()
         check = buttons.addButton(tr("Check"), QDialogButtonBox.ButtonRole.AcceptRole)
-        skip = buttons.addButton(tr("Skip this receipt"), QDialogButtonBox.ButtonRole.RejectRole)
+        skip = buttons.addButton(tr("Skip"), QDialogButtonBox.ButtonRole.RejectRole)
         check.clicked.connect(self.submit)
         skip.clicked.connect(self.skip)
         check.setDefault(True)  # Enter
@@ -110,7 +105,7 @@ class CodeDialog(QDialog):
         except Exception as e:  # Pillow raises many types for damaged images
             logger.warning("Couldn't show Banxico's security image: %s", e)
             self.picture = None
-            self.image_label.setText(tr("Couldn't show Banxico's image; ask for another one."))
+            self.image_label.setText(tr("Couldn't show the image. Ask for another."))
 
     def another_image(self) -> None:
         try:

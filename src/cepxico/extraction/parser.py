@@ -343,7 +343,7 @@ def clean_field(name: str, raw: str) -> str | None:
         return None
     if name == "payment_date":
         if not re.fullmatch(DATE, raw, re.IGNORECASE) or not (date := _first_valid_date([raw])):
-            raise ValueError(tr("'{raw}' isn't a valid date (day/month/year, e.g. 05/11/2026)", raw=raw))
+            raise ValueError(tr("'{raw}' isn't a date (day/month/year)", raw=raw))
         return date
     if name == "tracking_key":
         # Banxico takes letters and digits only; separators shown on receipts are dropped.
@@ -353,17 +353,17 @@ def clean_field(name: str, raw: str) -> str | None:
         return key
     if name == "beneficiary_account":
         if re.search(r"[^\d\s-]", raw):
-            raise ValueError(tr("must contain digits only"))
+            raise ValueError(tr("digits only"))
         digits = re.sub(r"\D", "", raw)
         if len(digits) not in ACCOUNT_LENGTHS:
             raise ValueError(
                 tr(
-                    "has {count} digits; expected 18 (CLABE), 16 (debit card) or 10 (phone)",
+                    "has {count} digits; needs 18 (CLABE), 16 (card) or 10 (phone)",
                     count=len(digits),
                 )
             )
         if len(digits) == 18 and not clabe_is_valid(digits):
-            raise ValueError(tr("isn't a valid CLABE (its last digit doesn't match); check for a typo"))
+            raise ValueError(tr("isn't a valid CLABE; check for a typo"))
         return digits
     if name == "amount":
         if not re.fullmatch(rf"{_CURRENCY}[\d,]+(?:\.\d{{1,2}})?\s*(?:MXN|MXP)?", raw, re.IGNORECASE) or not (

@@ -177,11 +177,11 @@ def test_zip_without_readable_xml_holds_only_the_pdf(check):
 @pytest.mark.parametrize(
     ("status", "message_start"),
     [
-        ("Liquidado", "Payment is real and settled (Liquidado)"),
-        ("En proceso", "Banxico received the payment but hasn't settled it yet"),
-        ("Cancelado", "Payment was cancelled"),
-        ("Retornado", "Payment was returned"),
-        ("Rechazado", "Banxico found the payment (status: Rechazado)"),
+        ("Liquidado", "Settled (Liquidado), but no CEP yet"),
+        ("En proceso", "Not settled yet (En proceso)"),
+        ("Cancelado", "Cancelled before settling"),
+        ("Retornado", "Returned by the receiving bank"),
+        ("Rechazado", "Found (Rechazado), but no CEP"),
     ],
 )
 def test_payment_without_cep_is_not_reported_as_missing(check, status, message_start):

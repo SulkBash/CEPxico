@@ -238,7 +238,7 @@ def test_skipping_the_code_leaves_the_receipt_unchecked(receipt):
     spid = FakeSPIDClient(FOUND)
     result = process_file(receipt, FakeClient(FOUND), spid=SPIDLookup(spid, asker(None)[0]))
     assert result.outcome is Outcome.FAILED
-    assert result.message == "Not checked: no security code was typed"
+    assert result.message == "Not checked: no code typed"
     assert spid.codes == []
 
 
@@ -247,7 +247,7 @@ def test_gives_up_after_too_many_wrong_codes(receipt):
     ask, _ = asker(*["X"] * MAX_CODE_ATTEMPTS)
     result = process_file(receipt, FakeClient(FOUND), spid=SPIDLookup(spid, ask))
     assert result.outcome is Outcome.FAILED
-    assert result.message.startswith(f"Banxico didn't accept the security code {MAX_CODE_ATTEMPTS} times")
+    assert result.message.startswith(f"Code rejected {MAX_CODE_ATTEMPTS} times")
 
 
 def test_banks_come_from_the_spid_list(receipt):
@@ -349,7 +349,7 @@ def test_code_dialog_reports_an_image_it_cant_get(window):
         raise BanxicoError("Banxico is down")
 
     dialog = CodeDialog(window, request=request(image=b"junk", new_image=fail), on_answer=lambda _c: None)
-    assert "another one" in dialog.image_label.text()
+    assert "Ask for another" in dialog.image_label.text()
     dialog.another_image()
     assert dialog.image_label.text() == "Banxico is down"
     dialog.skip()

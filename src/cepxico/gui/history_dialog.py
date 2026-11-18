@@ -65,17 +65,9 @@ class HistoryDialog(QDialog):
         self.shown: list[Check] = []  # rows in the table, in order
 
         column = QVBoxLayout(self)
-        column.addWidget(
-            QLabel(
-                tr(
-                    "Kept to catch receipts used twice and for your records. "
-                    "Search by file, clave de rastreo, amount, name or bank."
-                )
-            )
-        )
         search_row = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText(tr("Search"))
+        self.search.setPlaceholderText(tr("Search file, clave, amount, name or bank"))
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(lambda _text: self.refresh())
         search_row.addWidget(self.search, 1)
@@ -166,7 +158,7 @@ class HistoryDialog(QDialog):
         if not check:
             messages.info(self, tr("Open CEP"), tr("Select a row first."))
         elif not check.cep_file or not Path(check.cep_file).is_file():
-            messages.info(self, tr("Open CEP"), tr("No CEP file for this check on this computer."))
+            messages.info(self, tr("Open CEP"), tr("This check's CEP isn't on this computer."))
         else:
             self._on_open(Path(check.cep_file))
 
@@ -179,8 +171,7 @@ class HistoryDialog(QDialog):
             self,
             tr("Forget"),
             tr(
-                "Forget the check of {file} on {date}? If Banxico confirmed it, its transfer no "
-                "longer counts as used, so another receipt for it can pass.",
+                "Forget the check of {file} on {date}? Its transfer will no longer count as used.",
                 file=check.file_name,
                 date=check.checked_at_text,
             ),

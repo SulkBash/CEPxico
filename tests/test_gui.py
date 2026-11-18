@@ -83,7 +83,7 @@ def test_process_files_skips_confirmed_receipts(app, tmp_path, monkeypatch):
     assert all(app.items[p].status is ItemStatus.PENDING for p in batches[0])
     assert app._skipped_confirmed == 1
     assert app.progress_label.text() == "1 / 4"  # the confirmed file counts as done
-    assert "Already confirmed, not checked again: 1" in app._summary(cancelled=False)
+    assert "Already confirmed: 1" in app._summary(cancelled=False)
 
 
 def test_process_files_with_everything_confirmed_does_nothing(app, tmp_path, monkeypatch):
@@ -97,7 +97,7 @@ def test_process_files_with_everything_confirmed_does_nothing(app, tmp_path, mon
 
     assert batches == []
     assert not app.processing
-    assert app.shown == ["Nothing to Check"]
+    assert app.shown == ["Check"]
 
 
 # --- Typing in fields ------------------------------------------------------------
@@ -131,7 +131,7 @@ def test_saved_corrections_are_checked_without_rereading(app, monkeypatch):
 
     assert errors == {}
     item = app.items["banamex.pdf"]
-    assert item.status is ItemStatus.PENDING and item.result_text == "Edited, ready to check"
+    assert item.status is ItemStatus.PENDING and item.result_text == "Edited"
     assert item.corrected.beneficiary_account == CLABE
     assert item.corrected.amount == read.amount  # the rest is kept
     assert batches == []  # Save alone doesn't check
@@ -211,7 +211,7 @@ def test_review_results_can_be_edited_and_are_counted(app, tmp_path):
     item = app.items["a.pdf"]
     assert item.status is ItemStatus.REVIEW and gui.can_edit(item)
     assert app.counts["review"] == 1
-    assert "NEEDS REVIEW (1)" in app._summary(cancelled=False)
+    assert "Review (1)" in app._summary(cancelled=False)
 
 
 def test_settings_dialog(app):
@@ -246,7 +246,7 @@ def test_settings_dialog_needs_an_account_when_the_check_is_on(app):
     assert not dialog.accounts.isEnabled()
     dialog.check_accounts.setChecked(True)
     settings, problem = dialog.settings_entered()
-    assert settings is None and "at least one account" in problem
+    assert settings is None and "Add an account" in problem
     dialog.reject()
 
 
@@ -294,17 +294,17 @@ def test_switching_language_redraws_the_window_and_keeps_the_queue(app):
     app.switch_language("es")
 
     assert i18n.get_language() == "es" and app.settings.language == "es"
-    assert app.windowTitle() == "CEPxico - Verificador de comprobantes SPEI"
+    assert app.tree.headerItem().text(0) == "Archivo"
     item = app.items["a.pdf"]
     assert item.row.text(1) == "Revisar"  # status in the new language
     assert item.row.text(0) == "a.pdf"
     assert app.tree.topLevelItemCount() == 1
     assert app.counts["review"] == 1
-    assert app.process_button.text() == "Procesar archivos"
+    assert app.process_button.text() == "Verificar"
     assert yes_button_text() == "&Sí"  # Qt's own words too, as in message boxes
 
     app.switch_language("en")
-    assert app.process_button.text() == "Process Files"
+    assert app.process_button.text() == "Check"
     assert yes_button_text() == "&Yes"
     app.settings = Settings()
 
@@ -432,7 +432,7 @@ def test_commands_are_offered_only_when_they_apply(app):
 
 
 def test_empty_queue_says_how_to_add_files(app):
-    assert app.tree.topLevelItemCount() == 0 and "Drag and drop files" in app.tree.placeholder
+    assert app.tree.topLevelItemCount() == 0 and "Drop receipts here" in app.tree.placeholder
 
 
 def details(app) -> dict[str, str]:
@@ -453,9 +453,9 @@ def test_details_show_the_receipt_and_copy_values(app):
     failed_banamex(app)
     app.items["banamex.pdf"].row.setSelected(True)
     rows = details(app)
-    assert rows["Status"] == "Failed" and rows["Result"] == "Missing cuenta beneficiaria"
+    assert rows["Status"] == "Error" and rows["Result"] == "Missing cuenta beneficiaria"
     assert rows["Clave de rastreo"] == "085901234567890123" and rows["Amount"] == "$48,750.00"
-    assert rows["Account"] == "N/A" and "Receipt" in rows and "Banks" in rows
+    assert rows["Account"] == "" and "Receipt" in rows and "Banks" in rows
 
     clave = app.details.findItems("Clave de rastreo", Qt.MatchFlag.MatchRecursive)[0]
     app.details.setCurrentItem(clave)

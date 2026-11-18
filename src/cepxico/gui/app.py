@@ -9,7 +9,7 @@ import queue
 import tempfile
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
@@ -56,7 +56,7 @@ from cepxico.gui.settings_dialog import SettingsDialog
 from cepxico.history import History
 from cepxico.i18n import LANGUAGES, get_language, set_language, tr
 from cepxico.models import FIELD_NAMES, PaymentData, field_label
-from cepxico.pipeline import SPID_URL, CodeRequest, FileResult, Outcome
+from cepxico.pipeline import CodeRequest, FileResult, Outcome
 from cepxico.pipeline import process_files as run_batch
 from cepxico.settings import Settings, load_settings, save_settings
 
@@ -87,12 +87,12 @@ class ItemStatus(Enum):
     def label(self) -> str:
         labels = {
             ItemStatus.PENDING: tr("Pending"),
-            ItemStatus.PROCESSING: tr("Processing"),
-            ItemStatus.SUCCESS: tr("Success"),
+            ItemStatus.PROCESSING: tr("Checking"),
+            ItemStatus.SUCCESS: tr("Confirmed"),
             ItemStatus.NOT_FOUND: tr("Not Found"),
             ItemStatus.REVIEW: tr("Review"),
-            ItemStatus.FAILED: tr("Failed"),
-            ItemStatus.CANCELLED: tr("Cancelled"),
+            ItemStatus.FAILED: tr("Error"),
+            ItemStatus.CANCELLED: tr("Skipped"),
         }
         return labels[self]
 
@@ -121,19 +121,9 @@ COUNT_KEYS = {
 }
 
 
-def counter_label(status: ItemStatus) -> str:
-    labels = {
-        ItemStatus.SUCCESS: tr("CEP Found"),
-        ItemStatus.REVIEW: tr("Needs Review"),
-        ItemStatus.NOT_FOUND: tr("Not Found at Banxico"),
-        ItemStatus.FAILED: tr("Failed"),
-    }
-    return labels[status]
-
-
 def file_types() -> list[tuple[str, str]]:
     return [
-        (tr("Documents & Images"), " ".join(f"*{ext}" for ext in sorted(SUPPORTED_EXTENSIONS))),
+        (tr("Receipts"), " ".join(f"*{ext}" for ext in sorted(SUPPORTED_EXTENSIONS))),
         (tr("All Files"), "*.*"),
     ]
 
@@ -154,7 +144,7 @@ class QueueItem:
     path: str
     row: Any = None  # its QTreeWidgetItem in the queue
     status: ItemStatus = ItemStatus.PENDING
-    result_text: str = field(default_factory=lambda: tr("Ready"))
+    result_text: str = ""
     result: FileResult | None = None
     corrected: PaymentData | None = None  # fields the user typed in; used instead of re-reading
 
@@ -238,11 +228,9 @@ class PropertyGrid(TreeWithPlaceholder):
         color: str = "",
     ) -> QTreeWidgetItem:
         text = str(value) if value else ""
-        item = QTreeWidgetItem(parent, [name, text or tr("N/A")])
+        item = QTreeWidgetItem(parent, [name, text])
         item.setToolTip(1, text)
-        if not text:
-            item.setForeground(1, QBrush(theme.muted_color()))
-        elif mono:
+        if mono:
             item.setFont(1, theme.mono())
         if color:
             item.setForeground(1, QBrush(QColor(color)))
@@ -316,7 +304,7 @@ class CEPApp(QMainWindow):
     # ------------------------------------------------------------------ layout
 
     def _build_ui(self) -> None:
-        self.setWindowTitle(tr("CEPxico - SPEI receipt checker"))
+        self.setWindowTitle("CEPxico")
         self._build_actions()
         self._build_menu()
         self.addToolBar(self._build_toolbar())
@@ -324,7 +312,7 @@ class CEPApp(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
         splitter.addWidget(self._build_queue())
-        self.details = PropertyGrid(tr("Select a file to view details."))
+        self.details = PropertyGrid(tr("No receipt selected"))
         splitter.addWidget(self.details)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -367,14 +355,14 @@ class CEPApp(QMainWindow):
         self._menubar = QMenuBar()  # the actions belong to it, and go when it's replaced
         key = QKeySequence.StandardKey
         self.add_action = self._action(tr("Add Files") + "…", self.add_files, "add", key.Open)
-        self.paste_action = self._action(tr("Paste Image"), self.on_paste, "", key.Paste)
+        self.paste_action = self._action(tr("Paste"), self.on_paste, "", key.Paste)
         self.folder_action = self._action(tr("Open CEP Folder"), self.open_cep_folder, "folder")
         self.exit_action = self._action(tr("Exit"), self.close, "", key.Quit)
-        self.process_action = self._action(tr("Process Files"), self.process_files, "play", "F5")
-        self.cancel_action = self._action(tr("Cancel"), self.cancel_processing, "stop", "Esc")
+        self.process_action = self._action(tr("Check"), self.process_files, "play", "F5")
+        self.cancel_action = self._action(tr("Stop"), self.cancel_processing, "stop", "Esc")
         self.edit_action = self._action(tr("Edit Fields") + "…", self.edit_selected, "edit", "F2")
-        self.remove_action = self._action(tr("Remove Selected"), self.remove_selected, "remove", key.Delete)
-        self.clear_action = self._action(tr("Clear All"), self.clear_files, "trash")
+        self.remove_action = self._action(tr("Remove"), self.remove_selected, "remove", key.Delete)
+        self.clear_action = self._action(tr("Clear List"), self.clear_files, "trash")
         self.select_all_action = self._action(tr("Select All"), self.select_all, "", key.SelectAll)
         self.history_action = self._action(tr("History") + "…", self.open_history, "history", "Ctrl+H")
         self.settings_action = self._action(tr("Settings") + "…", self.open_settings, "settings", "Ctrl+,")
@@ -433,7 +421,7 @@ class CEPApp(QMainWindow):
     def _build_queue(self) -> QTreeWidget:
         tree = TreeWithPlaceholder(
             tr(
-                "Drag and drop files, paste a screenshot ({shortcut}), or use Add Files.",
+                "Drop receipts here or paste a screenshot ({shortcut})",
                 shortcut=paste_shortcut(),
             )
         )
@@ -473,7 +461,7 @@ class CEPApp(QMainWindow):
         self._count_labels: dict[ItemStatus, QLabel] = {}
         for status in COUNTED:
             pane = QWidget()
-            pane.setToolTip(counter_label(status))
+            pane.setToolTip(status.label)
             row = QHBoxLayout(pane)
             row.setContentsMargins(6, 0, 2, 0)
             row.setSpacing(4)
@@ -526,7 +514,7 @@ class CEPApp(QMainWindow):
 
     def _refuse_if_busy(self) -> bool:
         if self.processing:
-            messages.warning(self, tr("Processing"), tr("Please wait until current processing finishes."))
+            messages.warning(self, tr("Checking"), tr("Wait for the check to finish."))
         return self.processing
 
     def _insert_row(self, item: QueueItem) -> QTreeWidgetItem:
@@ -559,20 +547,18 @@ class CEPApp(QMainWindow):
     def add_files(self) -> None:
         if self._refuse_if_busy():
             return
-        for path in messages.open_files(self, tr("Select Documents"), file_types()):
+        for path in messages.open_files(self, tr("Add Files"), file_types()):
             self.add_file(path)
 
     def _add_dropped(self, paths: list[str]) -> None:
         duplicates = 0
         for path in paths:
             if Path(path).suffix.lower() not in SUPPORTED_EXTENSIONS:
-                messages.warning(
-                    self, tr("Invalid File"), tr("Only PDF or image files are accepted: {path}", path=path)
-                )
+                messages.warning(self, tr("Add Files"), tr("{path} isn't a PDF or an image.", path=path))
             elif not self.add_file(path):
                 duplicates += 1
         if duplicates:
-            self.set_status_message(tr("Skipped {count} duplicate file(s)", count=duplicates))
+            self.set_status_message(tr("Already in the list: {count}", count=duplicates))
 
     def on_drop(self, paths: list[str]) -> None:
         if self._refuse_if_busy():
@@ -590,14 +576,14 @@ class CEPApp(QMainWindow):
             return
         picture = clipboard.image() if data.hasImage() else None
         if picture is None or picture.isNull():
-            self.set_status_message(tr("No image found on clipboard"))
+            self.set_status_message(tr("Nothing to paste"))
             return
         with tempfile.NamedTemporaryFile(prefix="cepxico_paste_", suffix=".png", delete=False) as tf:
             path = tf.name
         picture.save(path, "PNG")
         self._temp_files.append(path)
         self.add_file(path)
-        self.set_status_message(tr("Image pasted from clipboard"))
+        self.set_status_message(tr("Screenshot added"))
 
     def select_all(self) -> None:
         self.tree.selectAll()
@@ -643,10 +629,7 @@ class CEPApp(QMainWindow):
             self,
             tr("About CEPxico"),
             f"CEPxico {__version__}\n\n"
-            + tr(
-                "Checks SPEI receipts against Banxico's CEP service and saves the CEP of every "
-                "transfer it confirms."
-            )
+            + tr("Checks SPEI receipts with Banxico and saves their CEPs.")
             + "\n\nGNU AGPL-3.0-or-later",
         )
 
@@ -682,13 +665,13 @@ class CEPApp(QMainWindow):
             return
         item = self._selected_item()
         if not item:
-            messages.info(self, tr("Edit Fields"), tr("Select a file first."))
+            messages.info(self, tr("Edit Fields"), tr("Select a receipt first."))
             return
         if not can_edit(item):
             messages.info(
                 self,
                 tr("Edit Fields"),
-                tr("Fields can be edited for files that failed, weren't found at Banxico or need review."),
+                tr("Only receipts marked Error, Not Found or Review can be edited."),
             )
             return
 
@@ -733,7 +716,7 @@ class CEPApp(QMainWindow):
             return errors
         if values:
             item.corrected = corrected
-            self._set_status(path, ItemStatus.PENDING, tr("Edited, ready to check"))
+            self._set_status(path, ItemStatus.PENDING, tr("Edited"))
         if check_now:
             self._start_batch([item])
         return {}
@@ -765,11 +748,9 @@ class CEPApp(QMainWindow):
         grid.add(receipt, account, payment and payment.beneficiary_account, mono=True)
         grid.add(receipt, tr("Amount"), money(payment.amount if payment else None, spid))
         if pago_a_banco:
-            grid.note(receipt, tr("Pago a banco: paid to the receiving bank itself"))
+            grid.note(receipt, tr("Paid to the bank itself (pago a banco)"))
         if spid:
-            grid.note(
-                receipt, tr("Dollar transfer (SPID), checked at Banxico's CEP-SPID ({url})", url=SPID_URL)
-            )
+            grid.note(receipt, tr("Dollar transfer (SPID)"))
 
         banks = grid.group(tr("Banks"))
         # Bank as identified in Banxico's catalog, and how it was identified.
@@ -784,9 +765,9 @@ class CEPApp(QMainWindow):
 
             def party(p: Party) -> str:
                 details = ", ".join(v for v in (p.bank, p.account) if v)
-                return f"{p.name or tr('N/A')} ({details})" if details else (p.name or "")
+                return f"{p.name} ({details})" if p.name and details else (p.name or details)
 
-            record = grid.group(tr("Banxico's record"))
+            record = grid.group("CEP")
             grid.add(record, tr("Date"), f"{r.operation_date} {r.time}")
             grid.add(record, tr("Sender"), party(r.sender))
             grid.add(record, tr("Beneficiary"), party(r.beneficiary))
@@ -798,7 +779,7 @@ class CEPApp(QMainWindow):
             grid.add(files, "CEP", cep.saved_path.name)
         if payment and payment.edited_fields:
             grid.add(
-                files, tr("Typed by user"), ", ".join(field_label(name) for name in payment.edited_fields)
+                files, tr("Edited fields"), ", ".join(field_label(name) for name in payment.edited_fields)
             )
 
     def _set_status(self, path: str, status: ItemStatus, text: str) -> None:
@@ -861,17 +842,14 @@ class CEPApp(QMainWindow):
         if self._refuse_if_busy():
             return
         if not self.items:
-            messages.warning(self, tr("No Files"), tr("No files to process."))
+            messages.warning(self, tr("Check"), tr("The list is empty."))
             return
         to_check = [item for item in self.items.values() if not is_confirmed(item)]
         if not to_check:
             messages.info(
                 self,
-                tr("Nothing to Check"),
-                tr(
-                    "Every file is already confirmed at Banxico.\n\n"
-                    "To check a file again, remove it and add it back."
-                ),
+                tr("Check"),
+                tr("All receipts are already confirmed. To check one again, remove it and add it back."),
             )
             return
         self._start_batch(to_check)
@@ -885,12 +863,12 @@ class CEPApp(QMainWindow):
         self._skipped_confirmed = sum(
             1 for item in self.items.values() if item.path not in in_batch and is_confirmed(item)
         )
-        self.set_status_message(tr("Processing files..."))
+        self.set_status_message(tr("Checking…"))
         self.process_action.setEnabled(False)
         self.cancel_action.setEnabled(True)
         for item in to_check:
             item.result = None
-            self._set_status(item.path, ItemStatus.PENDING, tr("Queued"))
+            self._set_status(item.path, ItemStatus.PENDING, tr("Waiting"))
 
         paths = [item.path for item in to_check]
         payments = {item.path: item.corrected for item in to_check if item.corrected}
@@ -899,7 +877,7 @@ class CEPApp(QMainWindow):
     def cancel_processing(self) -> None:
         if self.processing:
             self._cancel.set()
-            self.set_status_message(tr("Cancel requested. Stopping after the files in progress..."))
+            self.set_status_message(tr("Stopping after the receipts in progress…"))
             self.cancel_action.setEnabled(False)
 
     def _worker(self, paths: list[str], payments: dict[str, PaymentData]) -> None:
@@ -979,7 +957,7 @@ class CEPApp(QMainWindow):
         self._set_status(path, OUTCOME_STATUS[result.outcome], message)
         self.set_status_message(
             tr(
-                "Processed {done}/{total}: {name}",
+                "{done} of {total}: {name}",
                 done=self.processed_count,
                 total=self._batch_size,
                 name=os.path.basename(path),
@@ -990,18 +968,16 @@ class CEPApp(QMainWindow):
         for path in paths:
             item = self.items.get(path)
             if item and item.status is ItemStatus.PENDING:
-                self._set_status(path, ItemStatus.CANCELLED, tr("Skipped by user"))
+                self._set_status(path, ItemStatus.CANCELLED, tr("Not checked"))
 
     def _on_batch_done(self) -> None:
         self.processing = False
         self.process_action.setEnabled(True)
         self.cancel_action.setEnabled(False)
         cancelled = self._cancel.is_set()
-        self.set_status_message(
-            tr("Processing cancelled by user") if cancelled else tr("Processing complete")
-        )
+        self.set_status_message(tr("Stopped") if cancelled else tr("Done"))
         self._refresh_counters()
-        messages.info(self, tr("Processing Summary"), self._summary(cancelled))
+        messages.info(self, tr("Results"), self._summary(cancelled))
 
     def _summary(self, cancelled: bool) -> str:
         def files_with(status: ItemStatus) -> list[QueueItem]:
@@ -1014,24 +990,23 @@ class CEPApp(QMainWindow):
         review = files_with(ItemStatus.REVIEW)
         failed, skipped = files_with(ItemStatus.FAILED), files_with(ItemStatus.CANCELLED)
 
-        lines = [
-            tr("Processing Cancelled") if cancelled else tr("Processing Complete"),
-            "",
-            tr("Total files loaded: {count}", count=len(self.items)),
-            tr("Processed: {count}", count=self.processed_count),
+        lines = [tr("Stopped"), ""] if cancelled else []
+        lines += [
+            tr("Receipts: {count}", count=len(self.items)),
+            tr("Checked: {count}", count=self.processed_count),
         ]
         if self._skipped_confirmed:
-            lines.append(tr("Already confirmed, not checked again: {count}", count=self._skipped_confirmed))
-        lines.append(tr("CEP found and saved: {count}", count=len(found)))
+            lines.append(tr("Already confirmed: {count}", count=self._skipped_confirmed))
+        lines.append(tr("Confirmed: {count}", count=len(found)))
         if skipped:
-            lines.append(tr("Cancelled: {count}", count=len(skipped)))
+            lines.append(tr("Not checked: {count}", count=len(skipped)))
         if found:
-            lines.append(tr("CEPs saved to: {folder}", folder=self.cep_dir))
+            lines.append(tr("CEPs in {folder}", folder=self.cep_dir))
         if review:
             lines += [
                 "",
                 tr(
-                    "NEEDS REVIEW ({count}) - a real payment, but not a clean confirmation:",
+                    "Review ({count}): the payment exists, but something doesn't match:",
                     count=len(review),
                 ),
             ]
@@ -1040,7 +1015,7 @@ class CEPApp(QMainWindow):
             lines += [
                 "",
                 tr(
-                    "NOT FOUND at Banxico ({count}) - check the extracted data; the receipt may be fake:",
+                    "Not found ({count}): check the data; the receipt may be fake:",
                     count=len(not_found),
                 ),
             ]

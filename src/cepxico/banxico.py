@@ -106,30 +106,19 @@ _PAYMENT_STATUS = re.compile(
 
 
 def rate_limit_message() -> str:
-    return tr("Banxico's limit of lookups was reached; try again later")
+    return tr("Banxico's lookup limit reached; try again later")
 
 
 def no_cep_message(status: str) -> str:
     """What a payment without CEP means for whoever was paid, by its status at Banxico."""
     messages = {
-        "LIQUIDADO": tr(
-            "Payment is real and settled (Liquidado), but the receiving bank hasn't "
-            "issued its CEP yet; check again later"
-        ),
-        "EN PROCESO": tr(
-            "Banxico received the payment but hasn't settled it yet (En proceso); check again later"
-        ),
-        "CANCELADO": tr("Payment was cancelled before it settled (Cancelado); the money didn't arrive"),
-        "RETORNADO": tr(
-            "Payment was returned by the beneficiary's bank (Retornado); the money didn't stay in the account"
-        ),
-        "DEVUELTO": tr(
-            "Payment was returned by the beneficiary's bank (Devuelto); the money didn't stay in the account"
-        ),
+        "LIQUIDADO": tr("Settled (Liquidado), but no CEP yet; check again later"),
+        "EN PROCESO": tr("Not settled yet (En proceso); check again later"),
+        "CANCELADO": tr("Cancelled before settling (Cancelado); no money arrived"),
+        "RETORNADO": tr("Returned by the receiving bank (Retornado); the money didn't stay"),
+        "DEVUELTO": tr("Returned by the receiving bank (Devuelto); the money didn't stay"),
     }
-    return messages.get(status.upper()) or tr(
-        "Banxico found the payment (status: {status}) but has no CEP for it", status=status or tr("unknown")
-    )
+    return messages.get(status.upper()) or tr("Found ({status}), but no CEP", status=status or tr("unknown"))
 
 
 @dataclass(frozen=True)
@@ -357,7 +346,7 @@ class BanxicoCEPClient:
 
     def _rejected(self) -> CEPResult:
         """What Banxico's "meta:stats=ERR" answer means on this service."""
-        return CEPResult(CEPStatus.INPUT_ERROR, tr("Banxico rejected the data as incomplete or invalid"))
+        return CEPResult(CEPStatus.INPUT_ERROR, tr("Banxico rejected the data"))
 
     def get_catalog(self, fecha: str) -> BankCatalog:
         """Banks participating on `fecha` (dd-mm-yyyy). Raises BanxicoError."""
@@ -376,7 +365,7 @@ class BanxicoCEPClient:
             rows = resp.json().get("instituciones")
             catalog = BankCatalog.from_rows(self._catalog_rows(rows)) if rows else None
         except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError) as e:
-            raise BanxicoError(tr("Could not load Banxico bank list: {error}", error=e)) from e
+            raise BanxicoError(tr("Couldn't load Banxico's bank list: {error}", error=e)) from e
         if not catalog:
             raise BanxicoError(tr("Banxico returned no bank list for {date}", date=fecha))
         logger.debug("Loaded %d banks for %s", len(catalog), fecha)
@@ -425,7 +414,7 @@ class BanxicoCEPClient:
             return CEPResult(
                 CEPStatus.INPUT_ERROR,
                 tr(
-                    "Sender and receiver are both {bank}; CEP only covers interbank transfers",
+                    "Both banks are {bank}; CEPs only exist between banks",
                     bank=sender.name,
                 ),
             )
@@ -443,7 +432,7 @@ class BanxicoCEPClient:
         try:
             self._prepare_session()
         except requests.RequestException as e:
-            return CEPResult(CEPStatus.ERROR, tr("Could not reach Banxico: {error}", error=e))
+            return CEPResult(CEPStatus.ERROR, tr("Couldn't reach Banxico: {error}", error=e))
 
         try:
             resp = self.session.post(
@@ -470,10 +459,7 @@ class BanxicoCEPClient:
         ):
             return CEPResult(
                 CEPStatus.CAPTCHA,
-                tr(
-                    "Banxico is asking for the security image, which it does after too many lookups; "
-                    "try again later or check this receipt on Banxico's website"
-                ),
+                tr("Banxico wants a security code (too many lookups); try again later"),
             )
         # Checked before "not found": this page's legend also explains "No encontrado".
         if _NO_CEP_MARK.search(plain):
@@ -505,7 +491,7 @@ class BanxicoCEPClient:
         if pdf.status_code != 200 or not pdf.content.startswith(b"%PDF"):
             if _rate_limited(pdf.text or ""):
                 return CEPResult(CEPStatus.RATE_LIMITED, rate_limit_message())
-            return CEPResult(CEPStatus.NOT_FOUND, message or tr("Banxico returned no CEP for this data"))
+            return CEPResult(CEPStatus.NOT_FOUND, message or tr("no CEP with this data"))
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         if cep_files is CEPFiles.ZIP:
@@ -593,7 +579,7 @@ class SPIDClient(BanxicoCEPClient):
         try:
             self._new_session()
         except requests.RequestException as e:
-            raise BanxicoError(tr("Could not reach Banxico: {error}", error=e)) from e
+            raise BanxicoError(tr("Couldn't reach Banxico: {error}", error=e)) from e
         return self.new_image()
 
     def new_image(self) -> bytes:
@@ -622,4 +608,4 @@ class SPIDClient(BanxicoCEPClient):
 
     def _rejected(self) -> CEPResult:
         # The page answers a wrong security code this way; the data was already checked.
-        return CEPResult(CEPStatus.WRONG_CODE, tr("Banxico didn't accept the security code (or the data)"))
+        return CEPResult(CEPStatus.WRONG_CODE, tr("Banxico rejected the code (or the data)"))

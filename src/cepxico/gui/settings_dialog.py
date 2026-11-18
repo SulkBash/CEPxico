@@ -26,20 +26,20 @@ from cepxico.gui import theme
 from cepxico.i18n import LANGUAGES, tr
 from cepxico.settings import Settings, parse_accounts
 
-WRAP = 440  # pixels: width of the explanations
+WRAP = 360  # pixels: width of error messages
 
 
 def file_choices() -> dict[CEPFiles, str]:
     return {
         CEPFiles.PDF: "PDF",
         CEPFiles.XML: "XML",
-        CEPFiles.ZIP: tr("PDF and XML in one ZIP file"),
+        CEPFiles.ZIP: tr("PDF and XML (ZIP)"),
     }
 
 
 def language_choices() -> dict[str, str]:
     """Setting value -> label; "" follows the system. Language names stay in their own language."""
-    return {"": tr("Same as the system"), **LANGUAGES}
+    return {"": tr("System"), **LANGUAGES}
 
 
 # Called with the new settings; returns a problem to show, or None once saved.
@@ -53,7 +53,7 @@ class SettingsDialog(QDialog):
         self._on_save = on_save
         column = QVBoxLayout(self)
 
-        files = self._group(column, tr("Save each CEP as"))
+        files = self._group(column, tr("CEP files"))
         self._file_group = QButtonGroup(self)
         self.cep_file_buttons: dict[CEPFiles, QRadioButton] = {}
         for value, text in file_choices().items():
@@ -62,34 +62,18 @@ class SettingsDialog(QDialog):
             self._file_group.addButton(choice)
             self.cep_file_buttons[value] = choice
             files.addWidget(choice)
-        files.addWidget(
-            theme.wrapped(
-                tr(
-                    "The XML is Banxico's digitally signed record of the transfer. It can be checked at "
-                    "banxico.org.mx/validador-cep-spei and imported by accounting software. The app always "
-                    "reads it to confirm the CEP matches the receipt; this only keeps a copy. If Banxico's "
-                    "XML can't be read, the PDF is saved instead."
-                ),
-                WRAP,
-            )
+        self.cep_file_buttons[CEPFiles.XML].setToolTip(
+            tr("Banxico's signed record of the transfer; accounting software can import it.")
         )
 
         accounts = self._group(column, tr("Your accounts"))
         self.check_accounts = QCheckBox(tr("Only accept payments to these accounts"))
         self.check_accounts.setChecked(settings.check_own_accounts)
         self.check_accounts.toggled.connect(lambda _on: self._update_enabled())
+        self.check_accounts.setToolTip(tr("Receipts paid to any other account are marked Review."))
         accounts.addWidget(self.check_accounts)
-        accounts.addWidget(
-            theme.wrapped(
-                tr(
-                    "A real transfer to someone else's account would otherwise pass as confirmed. Receipts "
-                    "paid elsewhere are marked Review without asking Banxico. One account per line: CLABE, "
-                    "and also the debit card or phone number if customers pay to those."
-                ),
-                WRAP,
-            )
-        )
         self.accounts = QPlainTextEdit("\n".join(settings.own_accounts))
+        self.accounts.setPlaceholderText(tr("One per line: CLABE, card or phone"))
         self.accounts.setFont(theme.mono())
         self.accounts.setFixedHeight(self.accounts.fontMetrics().lineSpacing() * 4 + 12)
         accounts.addWidget(self.accounts)
@@ -108,14 +92,12 @@ class SettingsDialog(QDialog):
         language.addLayout(row)
 
         data = self._group(column, tr("Data folder"))
-        data.addWidget(
-            theme.wrapped(
-                tr("Settings, history and the log file (cepxico.log, to attach to bug reports)."), WRAP
-            )
-        )
         path_row = QHBoxLayout()
         path = QLineEdit(str(app_data_dir()))  # read-only, but can be selected and copied
         path.setReadOnly(True)
+        path.setToolTip(tr("Settings, history and cepxico.log"))
+        path.setCursorPosition(0)  # show where it starts, not its end
+        path.setMinimumWidth(path.fontMetrics().horizontalAdvance(path.text()) + 16)
         path_row.addWidget(path, 1)
         open_folder = QPushButton(tr("Open"))
         open_folder.setAutoDefault(False)
@@ -161,7 +143,7 @@ class SettingsDialog(QDialog):
         if problems:
             return None, tr("Fix these accounts:") + "\n" + "\n".join(problems)
         if self.check_accounts.isChecked() and not accounts:
-            return None, tr("Add at least one account, or turn the check off.")
+            return None, tr("Add an account or uncheck the box.")
         cep_files = next(value for value, choice in self.cep_file_buttons.items() if choice.isChecked())
         language = next((value for value, choice in self.language_buttons.items() if choice.isChecked()), "")
         return Settings(

@@ -26,14 +26,14 @@ def hints(pago_a_banco: bool) -> dict[str, str]:
     if pago_a_banco:
         return {
             "payment_date": tr("day/month/year"),
-            "sender_bank": tr("name Banxico uses, e.g. BANORTE"),
+            "sender_bank": tr("e.g. BANORTE"),
             "receiver_bank": tr("the bank that was paid"),
-            "beneficiary_account": tr("the account the payment came from (CLABE, card or phone)"),
+            "beneficiary_account": tr("account the money came from"),
         }
     return {
         "payment_date": tr("day/month/year"),
-        "sender_bank": tr("name Banxico uses, e.g. BANORTE"),
-        "receiver_bank": tr("not needed with a valid CLABE"),
+        "sender_bank": tr("e.g. BANORTE"),
+        "receiver_bank": tr("optional with a CLABE"),
         "beneficiary_account": tr("CLABE, debit card or phone"),
     }
 
@@ -67,9 +67,7 @@ class FieldsDialog(QDialog):
         self.labels: dict[str, QLabel] = {}
 
         column = QVBoxLayout(self)
-        column.addWidget(
-            theme.wrapped(tr("Fix anything read wrong and fill in what's missing, copying from the receipt."))
-        )
+        column.addWidget(theme.wrapped(tr("Copy the missing or wrong values from the receipt.")))
         column.addSpacing(6)
         grid = QGridLayout()
         grid.setVerticalSpacing(2)
@@ -92,18 +90,11 @@ class FieldsDialog(QDialog):
             grid.setRowMinimumHeight(row + 1, note.sizeHint().height() + 4)
         column.addLayout(grid)
 
-        self.pago_a_banco = QCheckBox(
-            tr("Pago a banco: paid to the receiving bank itself, not to one of its customers")
-        )
+        self.pago_a_banco = QCheckBox(tr("Paid to the bank itself (pago a banco)"))
         self.pago_a_banco.setChecked(initial.get("pago_a_banco") == "1")
         self.pago_a_banco.toggled.connect(lambda _on: self._update_pago_a_banco())
         column.addWidget(self.pago_a_banco)
-        self.spid = QCheckBox(
-            tr(
-                "Dollar transfer (SPID): checked at Banxico's CEP-SPID, which asks you to type "
-                "a security image"
-            )
-        )
+        self.spid = QCheckBox(tr("Dollar transfer (SPID)"))
         self.spid.setChecked(initial.get("spid") == "1")
         column.addWidget(self.spid)
         self._update_pago_a_banco()
