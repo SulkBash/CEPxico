@@ -80,10 +80,14 @@ def isolated_settings(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def english():
-    """Messages in English whatever the machine's language; tests about Spanish switch."""
+def english(monkeypatch):
+    """Messages in English whatever the machine's language; tests about Spanish switch.
+    The system language counts as English too, for code that follows it (the command
+    line with no language in its settings): CI machines' locales vary ("C.UTF-8" falls
+    back to Spanish)."""
     from cepxico import i18n
 
+    monkeypatch.setattr(i18n, "system_language", lambda: "en")
     i18n.set_language("en")
     yield
     i18n.set_language("en")

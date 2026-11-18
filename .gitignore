@@ -22,6 +22,10 @@ Thumbs.db
 *.png
 *.jpg
 *.jpeg
+*.webp
+# ...except the README's pictures, made from invented data (scripts/record_demo.py)
+!docs/*.png
+!docs/*.gif
 
 # Tooling
 .pytest_cache/
