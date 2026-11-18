@@ -1,4 +1,4 @@
-"""Tkinter desktop app: queue receipts, process them in the background, inspect results."""
+"""Qt desktop app: queue receipts, process them in the background, inspect results."""
 
 from __future__ import annotations
 
@@ -6,23 +6,49 @@ import contextlib
 import logging
 import os
 import queue
-import sys
 import tempfile
 import threading
-import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from typing import Any
 
-from PIL import Image, ImageGrab
-from tkinterdnd2 import DND_FILES, TkinterDnD
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QBrush,
+    QCloseEvent,
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QGuiApplication,
+    QKeySequence,
+    QPainter,
+)
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QMenuBar,
+    QProgressBar,
+    QSplitter,
+    QStatusBar,
+    QToolBar,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QWidget,
+)
 
+from cepxico import __version__
 from cepxico.banxico import Party
 from cepxico.config import open_path
 from cepxico.extraction import SUPPORTED_EXTENSIONS, correct_payment
-from cepxico.gui import theme
+from cepxico.gui import messages, theme
 from cepxico.gui.code_dialog import CodeDialog
 from cepxico.gui.fields_dialog import FieldsDialog
 from cepxico.gui.history_dialog import HistoryDialog
@@ -36,9 +62,12 @@ from cepxico.settings import Settings, load_settings, save_settings
 
 logger = logging.getLogger(__name__)
 
-# Command-V on a Mac, Control-V elsewhere (the uppercase form fires with Caps Lock on).
-PASTE_KEYS = ("<Command-v>", "<Command-V>") if sys.platform == "darwin" else ("<Control-v>", "<Control-V>")
-PASTE_SHORTCUT = "Cmd+V" if sys.platform == "darwin" else "Ctrl+V"
+PATH_ROLE = Qt.ItemDataRole.UserRole  # where each row keeps its file's path
+
+
+def paste_shortcut() -> str:
+    """Ctrl+V, or ⌘V on a Mac."""
+    return QKeySequence(QKeySequence.StandardKey.Paste).toString(QKeySequence.SequenceFormat.NativeText)
 
 
 class ItemStatus(Enum):
@@ -75,8 +104,31 @@ OUTCOME_STATUS = {
     Outcome.FAILED: ItemStatus.FAILED,
 }
 FINISHED_STATUSES = frozenset(OUTCOME_STATUS.values())
+MUTED_STATUSES = frozenset({ItemStatus.PENDING, ItemStatus.CANCELLED})  # not checked (yet): grayed
 
-UI_POLL_MS = 50  # how often the Tk thread applies updates posted by the worker
+UI_POLL_MS = 50  # how often the UI thread applies updates posted by the worker
+SPINNER_MS = 110  # frame time of the spinner shown on receipts being checked
+SPINNER_FRAMES = 8
+
+# Results counted in the status bar, each with its glyph.
+COUNTED = (ItemStatus.SUCCESS, ItemStatus.REVIEW, ItemStatus.NOT_FOUND, ItemStatus.FAILED)
+COUNT_KEYS = {
+    ItemStatus.SUCCESS: "success",
+    ItemStatus.REVIEW: "review",
+    ItemStatus.NOT_FOUND: "notfound",
+    ItemStatus.FAILED: "failed",
+    ItemStatus.PENDING: "pending",
+}
+
+
+def counter_label(status: ItemStatus) -> str:
+    labels = {
+        ItemStatus.SUCCESS: tr("CEP Found"),
+        ItemStatus.REVIEW: tr("Needs Review"),
+        ItemStatus.NOT_FOUND: tr("Not Found at Banxico"),
+        ItemStatus.FAILED: tr("Failed"),
+    }
+    return labels[status]
 
 
 def file_types() -> list[tuple[str, str]]:
@@ -86,10 +138,21 @@ def file_types() -> list[tuple[str, str]]:
     ]
 
 
+def money(amount: str | None, spid: bool = False) -> str | None:
+    """ "12500.5" -> "$12,500.50" (US$ for dollar transfers); anything else as it is."""
+    if not amount:
+        return None
+    try:
+        value = Decimal(amount.replace(",", ""))
+    except InvalidOperation:
+        return amount
+    return f"{'US$' if spid else '$'}{value:,.2f}"
+
+
 @dataclass
 class QueueItem:
     path: str
-    tree_id: str
+    row: Any = None  # its QTreeWidgetItem in the queue
     status: ItemStatus = ItemStatus.PENDING
     result_text: str = field(default_factory=lambda: tr("Ready"))
     result: FileResult | None = None
@@ -119,15 +182,102 @@ def is_confirmed(item: QueueItem) -> bool:
     )
 
 
-class CEPApp(TkinterDnD.Tk):
+class TreeWithPlaceholder(QTreeWidget):
+    """A list that says what to do in gray when it's empty, as Windows Explorer does."""
+
+    def __init__(self, placeholder: str):
+        super().__init__()
+        self.placeholder = placeholder
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt's name)
+        super().paintEvent(event)
+        if self.topLevelItemCount() or not self.placeholder:
+            return
+        painter = QPainter(self.viewport())
+        painter.setPen(theme.muted_color())
+        area = self.viewport().rect().adjusted(24, 24, -24, -24)
+        painter.drawText(area, Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap, self.placeholder)
+
+
+class PropertyGrid(TreeWithPlaceholder):
+    """A receipt's details as name/value rows in collapsible groups, like a Properties
+    window. Ctrl+C (or right-click) copies the value of the selected row."""
+
+    def __init__(self, placeholder: str):
+        super().__init__(placeholder)
+        self.setColumnCount(2)
+        self.setHeaderHidden(True)
+        self.setUniformRowHeights(True)
+        self.setIndentation(14)
+        self.header().setStretchLastSection(True)
+        self.header().resizeSection(0, 150)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_menu)
+        copy = QAction(tr("Copy"), self, shortcut=QKeySequence.StandardKey.Copy)
+        copy.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        copy.triggered.connect(self.copy_value)
+        self.addAction(copy)
+        self._copy = copy
+
+    def group(self, title: str) -> QTreeWidgetItem:
+        item = QTreeWidgetItem(self, [title])
+        font = item.font(0)
+        font.setBold(True)
+        item.setFont(0, font)
+        item.setFirstColumnSpanned(True)
+        item.setExpanded(True)
+        return item
+
+    def add(
+        self,
+        parent: QTreeWidget | QTreeWidgetItem,
+        name: str,
+        value: object,
+        *,
+        mono: bool = False,
+        color: str = "",
+    ) -> QTreeWidgetItem:
+        text = str(value) if value else ""
+        item = QTreeWidgetItem(parent, [name, text or tr("N/A")])
+        item.setToolTip(1, text)
+        if not text:
+            item.setForeground(1, QBrush(theme.muted_color()))
+        elif mono:
+            item.setFont(1, theme.mono())
+        if color:
+            item.setForeground(1, QBrush(QColor(color)))
+        return item
+
+    def note(self, parent: QTreeWidgetItem, text: str) -> None:
+        item = QTreeWidgetItem(parent, [text])
+        item.setFirstColumnSpanned(True)
+        item.setToolTip(0, text)
+        font = item.font(0)
+        font.setItalic(True)
+        item.setFont(0, font)
+
+    def copy_value(self) -> None:
+        item = self.currentItem()
+        if item is not None:
+            QGuiApplication.clipboard().setText(item.toolTip(1) or item.text(0))
+
+    def _show_menu(self, position: QPoint) -> None:
+        if self.itemAt(position) is not None:
+            menu = QMenu(self)
+            menu.addAction(self._copy)
+            menu.exec(self.viewport().mapToGlobal(position))
+
+
+class CEPApp(QMainWindow):
     def __init__(self, cep_dir: Path, history: History | None = None):
+        app = theme.application()
         super().__init__()
         self.cep_dir = Path(cep_dir)
         self.settings = load_settings()
         set_language(self.settings.language)
+        theme.translate_qt(get_language())
         self.history = history or History()
         self.items: dict[str, QueueItem] = {}  # insertion-ordered queue, keyed by file path
-        self._path_by_tree_id: dict[str, str] = {}
         self._temp_files: list[str] = []  # pasted clipboard images, deleted on exit
         self.processing = False
         self.processed_count = 0  # files finished in the current/last batch
@@ -136,307 +286,345 @@ class CEPApp(TkinterDnD.Tk):
         self._cancel = threading.Event()
         self._code_dialog: CodeDialog | None = None  # open while a SPID receipt waits for its code
         self._ui_queue: queue.Queue[tuple[Callable[..., object], tuple[object, ...]]] = queue.Queue()
+        self._spinner_frame = 0
+        self.counts = dict.fromkeys(("success", "review", "notfound", "failed", "pending"), 0)
 
-        self.geometry("1180x780")
-        self.minsize(1080, 700)
-        self.configure(bg=theme.APP_BG)
-        theme.apply(self)
-
-        self.stat_vars = {
-            name: tk.StringVar(value="0")
-            for name in ("loaded", "processed", "success", "review", "notfound", "failed", "pending")
-        }
-        self.status_var = tk.StringVar(value=tr("Ready"))
-        self.progress_label_var = tk.StringVar(value="0 / 0")
-
-        self._main: ttk.Frame | None = None
+        self.setAcceptDrops(True)
         self._build_ui()
-        for key in PASTE_KEYS:
-            self.bind(key, self.on_paste)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.after(UI_POLL_MS, self._drain_ui_queue)
+        self._place_window()
+        # Icons are drawn in the text color: redraw them when the system turns dark or light.
+        app.styleHints().colorSchemeChanged.connect(self._on_color_scheme_changed)
+
+        self._ui_timer = QTimer(self, interval=UI_POLL_MS, timeout=self._drain_ui_queue)
+        self._ui_timer.start()
+        self._spinner_timer = QTimer(self, interval=SPINNER_MS, timeout=self._tick_spinner)
+        self._spinner_timer.start()
+
+    def _place_window(self) -> None:
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        area = screen.availableGeometry()
+        width, height = min(1100, area.width() - 40), min(680, area.height() - 80)
+        self.resize(width, height)
+        self.move(
+            area.x() + (area.width() - width) // 2, area.y() + max(0, (area.height() - height - 40) // 2)
+        )
+
+    def _on_color_scheme_changed(self) -> None:
+        theme.clear_icons()
+        self._rebuild_ui()
 
     # ------------------------------------------------------------------ layout
 
     def _build_ui(self) -> None:
-        self.title(tr("CEPxico - SPEI receipt checker"))
-        main = self._main = ttk.Frame(self, padding=16, style="App.TFrame")
-        main.pack(fill=tk.BOTH, expand=True)
-        self._build_header(main)
-        self._build_stats(main)
-        self._build_actions(main)
-        workspace = ttk.Panedwindow(main, orient=tk.HORIZONTAL)
-        workspace.pack(fill=tk.BOTH, expand=True)
-        self._build_queue_panel(workspace)
-        self._build_side_panel(workspace)
-        ttk.Label(main, textvariable=self.status_var, anchor=tk.W, style="StatusBar.TLabel").pack(
-            fill=tk.X, pady=(2, 0)
-        )
+        self.setWindowTitle(tr("CEPxico - SPEI receipt checker"))
+        self._build_actions()
+        self._build_menu()
+        self.addToolBar(self._build_toolbar())
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(self._build_queue())
+        self.details = PropertyGrid(tr("Select a file to view details."))
+        splitter.addWidget(self.details)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([660, 420])
+        self.setCentralWidget(splitter)  # replaces (and deletes) the old one on a rebuild
+        self.setStatusBar(self._build_status_bar())
+        self._refresh_counters()
 
     def _rebuild_ui(self) -> None:
         """Builds the window again, in the current language, keeping the queue."""
-        if self._main is not None:
-            self._main.destroy()
-        self._path_by_tree_id.clear()
+        if self._toolbar is not None:
+            self.removeToolBar(self._toolbar)
+            self._toolbar.deleteLater()
         self._build_ui()
         for item in self.items.values():
-            item.tree_id = self.tree.insert(
-                "",
-                tk.END,
-                text=os.path.basename(item.path),
-                values=(item.status.label, item.result_text),
-                tags=(item.status.tag,),
-            )
-            self._path_by_tree_id[item.tree_id] = item.path
+            item.row = self._insert_row(item)
         self._refresh_counters()
 
-    def _build_header(self, parent: ttk.Frame) -> None:
-        header = ttk.Frame(parent, style="App.TFrame")
-        header.pack(fill=tk.X, pady=(0, 12))
-        # App-wide actions; the toolbar below is for the queue.
-        other = "en" if get_language() == "es" else "es"
-        theme.make_button(header, LANGUAGES[other], lambda: self.switch_language(other)).pack(
-            side=tk.RIGHT, anchor=tk.N
-        )
-        theme.make_button(header, tr("Settings"), self.open_settings).pack(side=tk.RIGHT, anchor=tk.N, padx=5)
-        theme.make_button(header, tr("History"), self.open_history).pack(side=tk.RIGHT, anchor=tk.N, padx=5)
-        titles = ttk.Frame(header, style="App.TFrame")
-        titles.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Label(titles, text=tr("SPEI receipt checker"), style="HeaderTitle.TLabel").pack(anchor=tk.W)
-        ttk.Label(
-            titles,
-            text=tr(
-                "Drop SPEI receipts, monitor every file in real time, and download CEPs with clear "
-                "diagnostics."
-            ),
-            style="HeaderSubtitle.TLabel",
-        ).pack(anchor=tk.W, pady=(2, 0))
+    def _action(
+        self,
+        text: str,
+        slot: Callable[[], object],
+        icon_name: str = "",
+        shortcut: QKeySequence.StandardKey | str = "",
+    ) -> QAction:
+        action = QAction(text, self._menubar)
+        action.setIconText(text.rstrip("…"))  # the toolbar's label: no "…" there
+        if icon_name:
+            action.setIcon(theme.icon(icon_name))
+        if shortcut:
+            action.setShortcut(QKeySequence(shortcut))
+            native = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+            action.setToolTip(f"{text.rstrip('…')} ({native})")
+        action.triggered.connect(lambda _checked=False: slot())
+        return action
 
-    def _build_stats(self, parent: ttk.Frame) -> None:
-        row = ttk.Frame(parent, style="App.TFrame")
-        row.pack(fill=tk.X, pady=(0, 12))
-        cards = [
-            (tr("Loaded"), "loaded"),
-            (tr("Processed"), "processed"),
-            (tr("CEP Found"), "success"),
-            (tr("Needs Review"), "review"),
-            (tr("Not Found at Banxico"), "notfound"),
-            (tr("Failed"), "failed"),
-        ]
-        for i, (title, key) in enumerate(cards):
-            card = ttk.Frame(row, style="Card.TFrame", padding=(12, 10))
-            ttk.Label(card, text=title, style="CardHint.TLabel").pack(anchor=tk.W)
-            ttk.Label(card, textvariable=self.stat_vars[key], style="CardValue.TLabel").pack(
-                anchor=tk.W, pady=(2, 0)
-            )
-            padx = (0, 8) if i == 0 else (4, 0) if i == len(cards) - 1 else 4
-            card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=padx)
+    def _build_actions(self) -> None:
+        """Every command, shared by the menu bar, the toolbar and the right-click menu, so
+        their names, shortcuts and enabled states always agree."""
+        self._menubar = QMenuBar()  # the actions belong to it, and go when it's replaced
+        key = QKeySequence.StandardKey
+        self.add_action = self._action(tr("Add Files") + "…", self.add_files, "add", key.Open)
+        self.paste_action = self._action(tr("Paste Image"), self.on_paste, "", key.Paste)
+        self.folder_action = self._action(tr("Open CEP Folder"), self.open_cep_folder, "folder")
+        self.exit_action = self._action(tr("Exit"), self.close, "", key.Quit)
+        self.process_action = self._action(tr("Process Files"), self.process_files, "play", "F5")
+        self.cancel_action = self._action(tr("Cancel"), self.cancel_processing, "stop", "Esc")
+        self.edit_action = self._action(tr("Edit Fields") + "…", self.edit_selected, "edit", "F2")
+        self.remove_action = self._action(tr("Remove Selected"), self.remove_selected, "remove", key.Delete)
+        self.clear_action = self._action(tr("Clear All"), self.clear_files, "trash")
+        self.select_all_action = self._action(tr("Select All"), self.select_all, "", key.SelectAll)
+        self.history_action = self._action(tr("History") + "…", self.open_history, "history", "Ctrl+H")
+        self.settings_action = self._action(tr("Settings") + "…", self.open_settings, "settings", "Ctrl+,")
+        self.about_action = self._action(tr("About CEPxico"), self.show_about)
+        self.cancel_action.setEnabled(self.processing and not self._cancel.is_set())
+        self.process_action.setEnabled(not self.processing)
 
-    def _build_actions(self, parent: ttk.Frame) -> None:
-        bar = tk.Frame(parent, bg=theme.APP_BG)
-        bar.pack(fill=tk.X, pady=(0, 10))
-        theme.make_button(bar, tr("Add Files"), self.add_files).pack(side=tk.LEFT, padx=5)
-        theme.make_button(bar, tr("Remove Selected"), self.remove_selected).pack(side=tk.LEFT, padx=5)
-        theme.make_button(bar, tr("Edit Fields"), self.edit_selected).pack(side=tk.LEFT, padx=5)
-        theme.make_button(bar, tr("Clear All"), self.clear_files, variant="danger").pack(side=tk.LEFT, padx=5)
-        theme.make_button(bar, tr("Open CEP Folder"), self.open_cep_folder).pack(side=tk.LEFT, padx=5)
-        self.process_button = theme.make_button(
-            bar, tr("Process Files"), self.process_files, variant="primary"
-        )
-        self.process_button.pack(side=tk.RIGHT, padx=5)
-        self.cancel_button = theme.make_button(
-            bar,
-            tr("Cancel"),
-            self.cancel_processing,
-            state=tk.NORMAL if self.processing and not self._cancel.is_set() else tk.DISABLED,
-        )
-        self.cancel_button.pack(side=tk.RIGHT, padx=5)
-        if self.processing:
-            self.process_button.configure(state=tk.DISABLED)
+    def _build_menu(self) -> None:
+        bar = self._menubar
+        files = bar.addMenu("&" + tr("File"))
+        files.addActions([self.add_action, self.paste_action])
+        files.addSeparator()
+        files.addAction(self.folder_action)
+        files.addSeparator()
+        files.addAction(self.exit_action)
 
-    def _build_queue_panel(self, workspace: ttk.Panedwindow) -> None:
-        panel = ttk.Frame(workspace, style="Card.TFrame", padding=12)
-        workspace.add(panel, weight=3)
-        ttk.Label(panel, text=tr("Receipt Queue"), style="CardTitle.TLabel").pack(anchor=tk.W)
-        ttk.Label(
-            panel,
-            text=tr(
+        receipts = bar.addMenu("&" + tr("Receipts"))
+        receipts.addActions([self.process_action, self.cancel_action])
+        receipts.addSeparator()
+        receipts.addActions([self.edit_action, self.remove_action, self.clear_action])
+        receipts.addSeparator()
+        receipts.addAction(self.select_all_action)
+
+        tools = bar.addMenu("&" + tr("Tools"))
+        tools.addActions([self.history_action, self.settings_action])
+        tools.addSeparator()
+        languages = tools.addMenu(tr("Language"))
+        group = QActionGroup(languages)
+        for code, name in LANGUAGES.items():
+            action = languages.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(code == get_language())
+            action.triggered.connect(lambda _checked=False, code=code: self.switch_language(code))
+            group.addAction(action)
+
+        help_menu = bar.addMenu("&" + tr("Help"))
+        help_menu.addAction(self.about_action)
+        self.setMenuBar(bar)  # replaces (and deletes) the old one on a rebuild
+
+    _toolbar: QToolBar | None = None
+
+    def _build_toolbar(self) -> QToolBar:
+        bar = self._toolbar = QToolBar()
+        bar.setObjectName("toolbar")
+        bar.setMovable(False)
+        bar.setIconSize(QSize(16, 16))
+        bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        bar.addActions([self.add_action, self.edit_action, self.remove_action, self.clear_action])
+        bar.addSeparator()
+        bar.addActions([self.process_action, self.cancel_action])
+        bar.addSeparator()
+        bar.addActions([self.folder_action, self.history_action, self.settings_action])
+        self.process_button = bar.widgetForAction(self.process_action)
+        return bar
+
+    def _build_queue(self) -> QTreeWidget:
+        tree = TreeWithPlaceholder(
+            tr(
                 "Drag and drop files, paste a screenshot ({shortcut}), or use Add Files.",
-                shortcut=PASTE_SHORTCUT,
-            ),
-            style="CardHint.TLabel",
-        ).pack(anchor=tk.W, pady=(0, 8))
-
-        frame = ttk.Frame(panel, style="Card.TFrame")
-        frame.pack(fill=tk.BOTH, expand=True)
-        scrollbar = ttk.Scrollbar(frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        tree = ttk.Treeview(
-            frame,
-            columns=("status", "result"),
-            yscrollcommand=scrollbar.set,
-            selectmode="extended",
-            height=16,
-            style="Modern.Treeview",
+                shortcut=paste_shortcut(),
+            )
         )
-        tree.heading("#0", text=tr("File"))
-        tree.heading("status", text=tr("Status"))
-        tree.heading("result", text=tr("Result"))
-        tree.column("#0", width=460, anchor=tk.W)
-        tree.column("status", width=120, anchor=tk.CENTER)
-        tree.column("result", width=360, anchor=tk.W)
-        for tag, color in theme.STATUS_COLORS.items():
-            tree.tag_configure(tag, foreground=color)
-        tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        scrollbar.config(command=tree.yview)
-
-        tree.drop_target_register(DND_FILES)
-        tree.dnd_bind("<<Drop>>", self.on_drop)
-        tree.bind("<<TreeviewSelect>>", lambda _e: self._show_selected_details())
-        tree.bind("<Double-1>", lambda _e: self.edit_selected())
+        tree.setColumnCount(3)
+        tree.setHeaderLabels([tr("File"), tr("Status"), tr("Result")])
+        tree.setRootIsDecorated(False)
+        tree.setUniformRowHeights(True)
+        tree.setAlternatingRowColors(True)
+        tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
+        tree.setAllColumnsShowFocus(True)
+        header = tree.header()
+        header.setStretchLastSection(True)
+        header.resizeSection(0, 260)
+        header.resizeSection(1, 100)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        tree.itemSelectionChanged.connect(self._on_select)
+        tree.itemActivated.connect(lambda _item, _column: self.edit_selected())
+        tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tree.customContextMenuRequested.connect(self._show_context_menu)
         self.tree = tree
+        return tree
 
-    def _build_side_panel(self, workspace: ttk.Panedwindow) -> None:
-        panel = ttk.Frame(workspace, style="Card.TFrame", padding=12)
-        workspace.add(panel, weight=2)
-        ttk.Label(panel, text=tr("File Details"), style="CardTitle.TLabel").pack(anchor=tk.W)
-        ttk.Label(
-            panel, text=tr("Select any row to inspect extracted fields and status."), style="CardHint.TLabel"
-        ).pack(anchor=tk.W, pady=(0, 8))
+    def _build_status_bar(self) -> QStatusBar:
+        bar = QStatusBar()
+        self.status_label = QLabel(tr("Ready"))
+        bar.addWidget(self.status_label, 1)
 
-        self.details_text = tk.Text(
-            panel,
-            height=18,
-            bg="#F9FBFF",
-            fg="#182234",
-            insertbackground="#182234",
-            relief=tk.FLAT,
-            padx=12,
-            pady=10,
-            wrap=tk.WORD,
-            font=theme.mono(10),
-        )
-        self.details_text.pack(fill=tk.BOTH, expand=True)
-        self._set_details(tr("Select a file to view details."))
+        # Shown only while a batch runs.
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setFixedSize(140, 14)
+        self.progress_label = QLabel("0 / 0")
+        bar.addPermanentWidget(self.progress)
+        bar.addPermanentWidget(self.progress_label)
 
-        ttk.Label(panel, text=tr("Batch Progress"), style="CardTitle.TLabel").pack(anchor=tk.W, pady=(12, 2))
-        ttk.Label(
-            panel, text=tr("Tracks processed files in the active queue."), style="CardHint.TLabel"
-        ).pack(anchor=tk.W, pady=(0, 6))
-        progress_row = ttk.Frame(panel, style="Card.TFrame")
-        progress_row.pack(fill=tk.X, pady=(0, 8))
-        self.progress = ttk.Progressbar(
-            progress_row, mode="determinate", style="Modern.Horizontal.TProgressbar"
-        )
-        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10), ipady=2)
-        ttk.Label(progress_row, textvariable=self.progress_label_var, style="CardHint.TLabel").pack(
-            side=tk.RIGHT
-        )
+        # How many receipts have each result: a glyph and a number, named in its tooltip.
+        self._count_labels: dict[ItemStatus, QLabel] = {}
+        for status in COUNTED:
+            pane = QWidget()
+            pane.setToolTip(counter_label(status))
+            row = QHBoxLayout(pane)
+            row.setContentsMargins(6, 0, 2, 0)
+            row.setSpacing(4)
+            glyph = QLabel()
+            glyph.setPixmap(theme.status_icon(status.tag).pixmap(14, 14))
+            number = QLabel("0")
+            row.addWidget(glyph)
+            row.addWidget(number)
+            bar.addPermanentWidget(pane)
+            self._count_labels[status] = number
+        return bar
 
-        pending_row = ttk.Frame(panel, style="Card.TFrame")
-        pending_row.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(pending_row, text=tr("Pending Files"), style="CardHint.TLabel").pack(side=tk.LEFT)
-        ttk.Label(pending_row, textvariable=self.stat_vars["pending"], style="CardTitle.TLabel").pack(
-            side=tk.RIGHT
+    def _show_context_menu(self, position: QPoint) -> None:
+        row = self.tree.itemAt(position)
+        if row is None:
+            return
+        if not row.isSelected():
+            self.tree.setCurrentItem(row)
+        item = self._selected_item()
+        if not item:
+            return
+        cep = item.result.cep if item.result else None
+        cep_path = cep.saved_path if cep and cep.saved_path and cep.saved_path.is_file() else None
+        menu = QMenu(self)
+        menu.addAction(tr("Open Receipt"), lambda: self._open(item.path, tr("Open Receipt")))
+        open_cep = menu.addAction(
+            tr("Open CEP"), lambda: self._open(cep_path, tr("Open CEP")) if cep_path else None
         )
+        open_cep.setEnabled(cep_path is not None)
+        menu.addSeparator()
+        menu.addActions([self.edit_action, self.remove_action])
+        menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    # ------------------------------------------------------------------ drag & drop
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 (Qt's name)
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802 (Qt's name)
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if paths:
+            event.acceptProposedAction()
+            self.on_drop(paths)
 
     # ------------------------------------------------------------------ queue management
 
+    def set_status_message(self, text: str) -> None:
+        self.status_label.setText(text)
+
     def _refuse_if_busy(self) -> bool:
         if self.processing:
-            messagebox.showwarning(tr("Processing"), tr("Please wait until current processing finishes."))
+            messages.warning(self, tr("Processing"), tr("Please wait until current processing finishes."))
         return self.processing
+
+    def _insert_row(self, item: QueueItem) -> QTreeWidgetItem:
+        row = QTreeWidgetItem([os.path.basename(item.path), item.status.label, item.result_text])
+        row.setData(0, PATH_ROLE, item.path)
+        row.setToolTip(0, item.path)
+        row.setToolTip(2, item.result_text)
+        self.tree.addTopLevelItem(row)
+        self._paint_row(row, item.status)
+        return row
+
+    def _paint_row(self, row: QTreeWidgetItem, status: ItemStatus) -> None:
+        row.setIcon(0, theme.status_icon(status.tag, self._spinner_frame))
+        for column in range(3):
+            if status in MUTED_STATUSES:
+                row.setForeground(column, QBrush(theme.muted_color()))
+            else:
+                row.setData(column, Qt.ItemDataRole.ForegroundRole, None)  # the normal text color
 
     def add_file(self, path: str) -> bool:
         """Queues a file. Returns False if it was already queued."""
         if path in self.items:
             return False
-        item = QueueItem(path=path, tree_id="")
-        item.tree_id = self.tree.insert(
-            "", tk.END, text=os.path.basename(path), values=(item.status.label, item.result_text)
-        )
+        item = QueueItem(path=path)
+        item.row = self._insert_row(item)
         self.items[path] = item
-        self._path_by_tree_id[item.tree_id] = path
         self._refresh_counters()
         return True
 
     def add_files(self) -> None:
         if self._refuse_if_busy():
             return
-        for path in filedialog.askopenfilenames(title=tr("Select Documents"), filetypes=file_types()):
+        for path in messages.open_files(self, tr("Select Documents"), file_types()):
             self.add_file(path)
 
     def _add_dropped(self, paths: list[str]) -> None:
         duplicates = 0
         for path in paths:
             if Path(path).suffix.lower() not in SUPPORTED_EXTENSIONS:
-                messagebox.showwarning(
-                    tr("Invalid File"), tr("Only PDF or image files are accepted: {path}", path=path)
+                messages.warning(
+                    self, tr("Invalid File"), tr("Only PDF or image files are accepted: {path}", path=path)
                 )
             elif not self.add_file(path):
                 duplicates += 1
         if duplicates:
-            self.status_var.set(tr("Skipped {count} duplicate file(s)", count=duplicates))
+            self.set_status_message(tr("Skipped {count} duplicate file(s)", count=duplicates))
 
-    def on_drop(self, event: tk.Event) -> None:
+    def on_drop(self, paths: list[str]) -> None:
         if self._refuse_if_busy():
             return
-        self._add_dropped(list(self.tk.splitlist(event.data)))
+        self._add_dropped(paths)
 
-    def on_paste(self, _event: tk.Event | None = None) -> None:
+    def on_paste(self) -> None:
         if self._refuse_if_busy():
             return
-        try:
-            clipboard = ImageGrab.grabclipboard()
-        except NotImplementedError:
-            # Linux: Pillow reads the clipboard through wl-paste (Wayland) or xclip (X11).
-            messagebox.showerror(
-                tr("Paste Error"),
-                tr("Pasting images needs wl-clipboard (Wayland) or xclip (X11). Install one and try again."),
-            )
+        clipboard = QGuiApplication.clipboard()
+        data = clipboard.mimeData()
+        files = [url.toLocalFile() for url in data.urls() if url.isLocalFile()] if data.hasUrls() else []
+        if files:  # files copied in the file manager
+            self._add_dropped(files)
             return
-        except Exception as e:
-            messagebox.showerror(tr("Paste Error"), tr("Failed to read clipboard: {error}", error=e))
-            return
-        if isinstance(clipboard, list):  # files copied in the file manager
-            self._add_dropped([str(p) for p in clipboard])
-            return
-        if not isinstance(clipboard, Image.Image):
-            self.status_var.set(tr("No image found on clipboard"))
+        picture = clipboard.image() if data.hasImage() else None
+        if picture is None or picture.isNull():
+            self.set_status_message(tr("No image found on clipboard"))
             return
         with tempfile.NamedTemporaryFile(prefix="cepxico_paste_", suffix=".png", delete=False) as tf:
-            clipboard.save(tf, "PNG")
-        self._temp_files.append(tf.name)
-        self.add_file(tf.name)
-        self.status_var.set(tr("Image pasted from clipboard"))
+            path = tf.name
+        picture.save(path, "PNG")
+        self._temp_files.append(path)
+        self.add_file(path)
+        self.set_status_message(tr("Image pasted from clipboard"))
+
+    def select_all(self) -> None:
+        self.tree.selectAll()
 
     def remove_selected(self) -> None:
         if self._refuse_if_busy():
             return
-        for tree_id in self.tree.selection():
-            path = self._path_by_tree_id.pop(tree_id, None)
-            if path:
-                del self.items[path]
-                self.tree.delete(tree_id)
+        for row in self.tree.selectedItems():
+            self.items.pop(row.data(0, PATH_ROLE), None)
+            self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(row))
         self._refresh_counters()
-        self._set_details(tr("Select a file to view details."))
+        self._show_selected_details()
 
     def clear_files(self) -> None:
         if self._refuse_if_busy():
             return
-        self.tree.delete(*self.tree.get_children())
+        self.tree.clear()
         self.items.clear()
-        self._path_by_tree_id.clear()
         self.processed_count = 0
         self._refresh_counters()
-        self._set_details(tr("Select a file to view details."))
+        self._show_selected_details()
 
     def _open(self, path: Path | str, title: str) -> None:
         try:
             open_path(path)
         except OSError as e:
-            messagebox.showerror(title, tr("Couldn't open {path}: {error}", path=path, error=e))
+            messages.error(self, title, tr("Couldn't open {path}: {error}", path=path, error=e))
 
     def open_cep_folder(self) -> None:
         self.cep_dir.mkdir(parents=True, exist_ok=True)
@@ -450,6 +638,18 @@ class CEPApp(TkinterDnD.Tk):
             return
         SettingsDialog(self, settings=self.settings, on_save=self.apply_settings)
 
+    def show_about(self) -> None:
+        messages.info(
+            self,
+            tr("About CEPxico"),
+            f"CEPxico {__version__}\n\n"
+            + tr(
+                "Checks SPEI receipts against Banxico's CEP service and saves the CEP of every "
+                "transfer it confirms."
+            )
+            + "\n\nGNU AGPL-3.0-or-later",
+        )
+
     def apply_settings(self, settings: Settings) -> str | None:
         """Saves new settings; they apply from the next check. Returns a problem, or None."""
         try:
@@ -460,31 +660,33 @@ class CEPApp(TkinterDnD.Tk):
         self.settings = settings
         if language_changed:
             set_language(settings.language)
+            theme.translate_qt(get_language())
             self._rebuild_ui()
-        self.status_var.set(tr("Settings saved"))
+        self.set_status_message(tr("Settings saved"))
         return None
 
     def switch_language(self, code: str) -> None:
-        """The header's language button: saves the choice and redraws the window."""
+        """Tools > Language: saves the choice and redraws the window."""
         problem = self.apply_settings(replace(self.settings, language=code))
         if problem:
-            messagebox.showerror(tr("Settings"), problem)
+            messages.error(self, tr("Settings"), problem)
 
     # ------------------------------------------------------------------ typing in fields
 
     def _selected_item(self) -> QueueItem | None:
-        selection = self.tree.selection()
-        return self.items.get(self._path_by_tree_id.get(selection[0], "")) if selection else None
+        rows = sorted(self.tree.selectedItems(), key=self.tree.indexOfTopLevelItem)
+        return self.items.get(rows[0].data(0, PATH_ROLE)) if rows else None
 
     def edit_selected(self) -> None:
         if self._refuse_if_busy():
             return
         item = self._selected_item()
         if not item:
-            messagebox.showinfo(tr("Edit Fields"), tr("Select a file first."))
+            messages.info(self, tr("Edit Fields"), tr("Select a file first."))
             return
         if not can_edit(item):
-            messagebox.showinfo(
+            messages.info(
+                self,
                 tr("Edit Fields"),
                 tr("Fields can be edited for files that failed, weren't found at Banxico or need review."),
             )
@@ -538,81 +740,101 @@ class CEPApp(TkinterDnD.Tk):
 
     # ------------------------------------------------------------------ display
 
-    def _set_details(self, content: str) -> None:
-        self.details_text.configure(state=tk.NORMAL)
-        self.details_text.delete("1.0", tk.END)
-        self.details_text.insert(tk.END, content)
-        self.details_text.configure(state=tk.DISABLED)
-
     def _show_selected_details(self) -> None:
+        grid = self.details
+        grid.clear()
         item = self._selected_item()
         if not item:
-            self._set_details(tr("Select a file to view details."))
+            grid.viewport().update()  # shows the placeholder
             return
 
         result = item.result
         payment = item.corrected or (result.payment if result else None)
-
-        def show(value: object) -> str:
-            return str(value) if value else tr("N/A")
-
         cep = result.cep if result else None
         pago_a_banco = bool(payment and payment.pago_a_banco)
-        account_label = tr("Ordering account") if pago_a_banco else tr("Account")
-        lines = [
-            f"{tr('Path')}: {item.path}",
-            f"{tr('Status')}: {item.status.label}",
-            f"{tr('Result')}: {item.result_text}",
-            "",
-            f"{tr('Date')}: {show(payment and payment.payment_date)}",
-            f"{tr('Clave de rastreo')}: {show(payment and payment.tracking_key)}",
-            f"{account_label}: {show(payment and payment.beneficiary_account)}",
-            f"{tr('Amount')}: {show(payment and payment.amount)}",
-        ]
+        spid = bool(payment and payment.spid)
+
+        status = grid.add(grid, tr("Status"), item.status.label, color=theme.STATUS_COLORS[item.status.tag])
+        status.setIcon(1, theme.status_icon(item.status.tag, self._spinner_frame))
+        grid.add(grid, tr("Result"), item.result_text)
+
+        receipt = grid.group(tr("Receipt"))
+        grid.add(receipt, tr("Date"), payment and payment.payment_date)
+        grid.add(receipt, tr("Clave de rastreo"), payment and payment.tracking_key, mono=True)
+        account = tr("Ordering account") if pago_a_banco else tr("Account")
+        grid.add(receipt, account, payment and payment.beneficiary_account, mono=True)
+        grid.add(receipt, tr("Amount"), money(payment.amount if payment else None, spid))
         if pago_a_banco:
-            lines.append(tr("Pago a banco: paid to the receiving bank itself"))
-        if payment and payment.spid:
-            lines += ["", tr("Dollar transfer (SPID), checked at Banxico's CEP-SPID ({url})", url=SPID_URL)]
-        lines += [
-            "",
-            # Bank as identified in Banxico's catalog, and how it was identified.
-            f"{tr('Sending bank')}: {show(result and result.sender)}",
-            f"{tr('Receiving bank')}: {show(result and result.receiver)}",
-        ]
+            grid.note(receipt, tr("Pago a banco: paid to the receiving bank itself"))
+        if spid:
+            grid.note(
+                receipt, tr("Dollar transfer (SPID), checked at Banxico's CEP-SPID ({url})", url=SPID_URL)
+            )
+
+        banks = grid.group(tr("Banks"))
+        # Bank as identified in Banxico's catalog, and how it was identified.
+        grid.add(banks, tr("Sending bank"), result and result.sender)
+        grid.add(banks, tr("Receiving bank"), result and result.receiver)
         if cep and cep.payment_status:
-            lines.append(f"{tr('Status at Banxico')}: {cep.payment_status}")
+            grid.add(banks, tr("Status at Banxico"), cep.payment_status)
+
         if cep and cep.record:
             # Banxico's own record of the transfer, read from the CEP's XML.
             r = cep.record
 
             def party(p: Party) -> str:
-                return f"{show(p.name)} ({p.bank}, {show(p.account)})"
+                details = ", ".join(v for v in (p.bank, p.account) if v)
+                return f"{p.name or tr('N/A')} ({details})" if details else (p.name or "")
 
-            lines += [
-                "",
-                f"Banxico: {r.operation_date} {r.time}",
-                f"{tr('Sender')}: {party(r.sender)}",
-                f"{tr('Beneficiary')}: {party(r.beneficiary)}",
-                f"{tr('Concept')}: {show(r.concept)}",
-            ]
+            record = grid.group(tr("Banxico's record"))
+            grid.add(record, tr("Date"), f"{r.operation_date} {r.time}")
+            grid.add(record, tr("Sender"), party(r.sender))
+            grid.add(record, tr("Beneficiary"), party(r.beneficiary))
+            grid.add(record, tr("Concept"), r.concept)
+
+        files = grid.group(tr("File"))
+        grid.add(files, tr("Path"), item.path)
         if cep and cep.saved_path:  # name only: Open CEP Folder shows where it is
-            lines += ["", f"CEP: {cep.saved_path.name}"]
+            grid.add(files, "CEP", cep.saved_path.name)
         if payment and payment.edited_fields:
-            typed = ", ".join(field_label(name) for name in payment.edited_fields)
-            lines += ["", f"{tr('Typed by user')}: {typed}"]
-        if can_edit(item):
-            lines += ["", tr("Double-click the file (or Edit Fields) to correct or fill in fields.")]
-        self._set_details("\n".join(lines))
+            grid.add(
+                files, tr("Typed by user"), ", ".join(field_label(name) for name in payment.edited_fields)
+            )
 
     def _set_status(self, path: str, status: ItemStatus, text: str) -> None:
         item = self.items.get(path)
         if not item:
             return
         item.status, item.result_text = status, text
-        self.tree.item(item.tree_id, values=(status.label, text), tags=(status.tag,))
-        if item.tree_id in self.tree.selection():
+        item.row.setText(1, status.label)
+        item.row.setText(2, text)
+        item.row.setToolTip(2, text)
+        self._paint_row(item.row, status)
+        if item.row.isSelected():
             self._show_selected_details()
         self._refresh_counters()
+
+    def _on_select(self) -> None:
+        self._show_selected_details()
+        self._update_tools()
+
+    def _update_tools(self) -> None:
+        """Enables the commands that can act on the queue and selection as they are."""
+        item = self._selected_item()
+        idle = not self.processing
+        self.edit_action.setEnabled(idle and item is not None and can_edit(item))
+        self.remove_action.setEnabled(idle and bool(self.tree.selectedItems()))
+        self.clear_action.setEnabled(idle and bool(self.items))
+
+    def _tick_spinner(self) -> None:
+        """Turns the spinner on receipts being checked."""
+        if not self.processing:
+            return
+        self._spinner_frame = (self._spinner_frame + 1) % SPINNER_FRAMES
+        spinner = theme.status_icon(ItemStatus.PROCESSING.tag, self._spinner_frame)
+        for item in self.items.values():
+            if item.status is ItemStatus.PROCESSING:
+                item.row.setIcon(0, spinner)
 
     def _count(self, status: ItemStatus) -> int:
         return sum(1 for item in self.items.values() if item.status is status)
@@ -622,15 +844,16 @@ class CEPApp(TkinterDnD.Tk):
         # Files with a result, whether from this batch or an earlier one (confirmed files
         # a batch skips count as done).
         done = sum(1 for item in self.items.values() if item.status in FINISHED_STATUSES)
-        self.progress.configure(maximum=max(total, 1), value=done)
-        self.progress_label_var.set(f"{done} / {total}")
-        self.stat_vars["loaded"].set(str(total))
-        self.stat_vars["processed"].set(str(self.processed_count))
-        self.stat_vars["success"].set(str(self._count(ItemStatus.SUCCESS)))
-        self.stat_vars["review"].set(str(self._count(ItemStatus.REVIEW)))
-        self.stat_vars["notfound"].set(str(self._count(ItemStatus.NOT_FOUND)))
-        self.stat_vars["failed"].set(str(self._count(ItemStatus.FAILED)))
-        self.stat_vars["pending"].set(str(self._count(ItemStatus.PENDING)))
+        self.progress.setMaximum(max(total, 1))
+        self.progress.setValue(done)
+        self.progress_label.setText(f"{done} / {total}")
+        self.progress.setVisible(self.processing)
+        self.progress_label.setVisible(self.processing)
+        for status, key in COUNT_KEYS.items():
+            self.counts[key] = self._count(status)
+        for status, number in self._count_labels.items():
+            number.setText(str(self.counts[COUNT_KEYS[status]]))
+        self._update_tools()
 
     # ------------------------------------------------------------------ processing
 
@@ -638,11 +861,12 @@ class CEPApp(TkinterDnD.Tk):
         if self._refuse_if_busy():
             return
         if not self.items:
-            messagebox.showwarning(tr("No Files"), tr("No files to process."))
+            messages.warning(self, tr("No Files"), tr("No files to process."))
             return
         to_check = [item for item in self.items.values() if not is_confirmed(item)]
         if not to_check:
-            messagebox.showinfo(
+            messages.info(
+                self,
                 tr("Nothing to Check"),
                 tr(
                     "Every file is already confirmed at Banxico.\n\n"
@@ -661,9 +885,9 @@ class CEPApp(TkinterDnD.Tk):
         self._skipped_confirmed = sum(
             1 for item in self.items.values() if item.path not in in_batch and is_confirmed(item)
         )
-        self.status_var.set(tr("Processing files..."))
-        self.process_button.configure(state=tk.DISABLED)
-        self.cancel_button.configure(state=tk.NORMAL)
+        self.set_status_message(tr("Processing files..."))
+        self.process_action.setEnabled(False)
+        self.cancel_action.setEnabled(True)
         for item in to_check:
             item.result = None
             self._set_status(item.path, ItemStatus.PENDING, tr("Queued"))
@@ -675,12 +899,12 @@ class CEPApp(TkinterDnD.Tk):
     def cancel_processing(self) -> None:
         if self.processing:
             self._cancel.set()
-            self.status_var.set(tr("Cancel requested. Stopping after the files in progress..."))
-            self.cancel_button.configure(state=tk.DISABLED)
+            self.set_status_message(tr("Cancel requested. Stopping after the files in progress..."))
+            self.cancel_action.setEnabled(False)
 
     def _worker(self, paths: list[str], payments: dict[str, PaymentData]) -> None:
-        """Runs in a background thread. It never touches Tk directly: UI updates go
-        through self._ui_queue and are applied on the Tk thread by _drain_ui_queue()."""
+        """Runs in a background thread. It never touches Qt widgets: UI updates go through
+        self._ui_queue and are applied on the UI thread by _drain_ui_queue()."""
         post = self._post_to_ui
 
         def on_step(path: str, step: str) -> None:
@@ -710,7 +934,7 @@ class CEPApp(TkinterDnD.Tk):
             post(self._on_batch_done)
 
     def _ask_code(self, request: CodeRequest) -> str | None:
-        """Runs on a worker thread: shows Banxico's security image on the Tk thread and
+        """Runs on a worker thread: shows Banxico's security image on the UI thread and
         waits for the code typed. None if the person skips it or cancels the batch."""
         answer: queue.Queue[str | None] = queue.Queue(maxsize=1)
         self._post_to_ui(self._show_code_dialog, request, answer)
@@ -726,12 +950,14 @@ class CEPApp(TkinterDnD.Tk):
         self._code_dialog = CodeDialog(self, request=request, on_answer=answer.put)
 
     def _close_code_dialog(self) -> None:
-        if self._code_dialog is not None and self._code_dialog.winfo_exists():
-            self._code_dialog.destroy()
+        if self._code_dialog is not None:
+            # RuntimeError: answered just now, so Qt already deleted it.
+            with contextlib.suppress(RuntimeError):
+                self._code_dialog.skip()
         self._code_dialog = None
 
     def _post_to_ui(self, func: Callable[..., object], *args: object) -> None:
-        """Thread-safe: schedules func(*args) on the Tk thread."""
+        """Thread-safe: schedules func(*args) on the UI thread."""
         self._ui_queue.put((func, args))
 
     def _drain_ui_queue(self) -> None:
@@ -741,7 +967,6 @@ class CEPApp(TkinterDnD.Tk):
             except queue.Empty:
                 break
             func(*args)
-        self.after(UI_POLL_MS, self._drain_ui_queue)
 
     def _on_file_done(self, path: str, result: FileResult) -> None:
         item = self.items.get(path)
@@ -752,7 +977,7 @@ class CEPApp(TkinterDnD.Tk):
         if result.payment and result.payment.edited_fields:
             message += f"  [{tr('edited')}]"  # checked with fields the user typed in
         self._set_status(path, OUTCOME_STATUS[result.outcome], message)
-        self.status_var.set(
+        self.set_status_message(
             tr(
                 "Processed {done}/{total}: {name}",
                 done=self.processed_count,
@@ -769,12 +994,14 @@ class CEPApp(TkinterDnD.Tk):
 
     def _on_batch_done(self) -> None:
         self.processing = False
-        self.process_button.configure(state=tk.NORMAL)
-        self.cancel_button.configure(state=tk.DISABLED)
+        self.process_action.setEnabled(True)
+        self.cancel_action.setEnabled(False)
         cancelled = self._cancel.is_set()
-        self.status_var.set(tr("Processing cancelled by user") if cancelled else tr("Processing complete"))
+        self.set_status_message(
+            tr("Processing cancelled by user") if cancelled else tr("Processing complete")
+        )
         self._refresh_counters()
-        messagebox.showinfo(tr("Processing Summary"), self._summary(cancelled))
+        messages.info(self, tr("Processing Summary"), self._summary(cancelled))
 
     def _summary(self, cancelled: bool) -> str:
         def files_with(status: ItemStatus) -> list[QueueItem]:
@@ -825,8 +1052,9 @@ class CEPApp(TkinterDnD.Tk):
 
     # ------------------------------------------------------------------ shutdown
 
-    def _on_close(self) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 (Qt's name)
         for path in self._temp_files:
             with contextlib.suppress(OSError):
                 os.remove(path)
-        self.destroy()
+        self._temp_files.clear()
+        super().closeEvent(event)

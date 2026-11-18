@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,9 @@ import pytest
 from cepxico.banks import BankCatalog, BankDirectory
 
 DATA_DIR = Path(__file__).parent / "data"
+
+# Desktop app tests draw off screen: no windows pop up, and no display is needed.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 def with_check_digit(first17: str) -> str:
@@ -55,22 +59,18 @@ def banxico_is_open(monkeypatch):
 
 @pytest.fixture(scope="session")
 def window(tmp_path_factory):
-    """The desktop app's window, shared by every test that needs Tk: creating and
-    destroying many Tk roots in one process makes Tcl fail to initialise now and then
-    on Windows. Created before per-test fixtures run, so it gets its own data folder."""
+    """The desktop app's window, shared by every test that needs Qt (one QApplication per
+    process). Created before per-test fixtures run, so it gets its own data folder. Qt's
+    offscreen platform draws nothing on screen and needs no display."""
     from cepxico.gui import app as gui
     from cepxico.history import History
 
     home = tmp_path_factory.mktemp("window_home")
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("CEPXICO_HOME", str(home))
-        try:
-            window = gui.CEPApp(tmp_path_factory.mktemp("ceps"), history=History(home / "history.sqlite3"))
-        except Exception as e:  # no display, or tkdnd missing
-            pytest.skip(f"Tk unavailable: {e}")
-    window.withdraw()
+        window = gui.CEPApp(tmp_path_factory.mktemp("ceps"), history=History(home / "history.sqlite3"))
     yield window
-    window.destroy()
+    window.close()
 
 
 @pytest.fixture(autouse=True)

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
 
 from cepxico.banxico import CEPFiles, CEPResult, CEPStatus
 from cepxico.gui import app as gui
@@ -21,22 +22,22 @@ def test_confirmed_needs_success_and_the_cep_file(tmp_path):
     cep.write_bytes(b"%PDF")
     found = result("a.pdf", Outcome.SUCCESS, cep)
 
-    assert is_confirmed(QueueItem("a.pdf", "1", ItemStatus.SUCCESS, result=found))
-    assert not is_confirmed(QueueItem("a.pdf", "1", ItemStatus.PENDING))
+    assert is_confirmed(QueueItem("a.pdf", status=ItemStatus.SUCCESS, result=found))
+    assert not is_confirmed(QueueItem("a.pdf", status=ItemStatus.PENDING))
     not_found = result("a.pdf", Outcome.NOT_FOUND)
-    assert not is_confirmed(QueueItem("a.pdf", "1", ItemStatus.NOT_FOUND, result=not_found))
+    assert not is_confirmed(QueueItem("a.pdf", status=ItemStatus.NOT_FOUND, result=not_found))
     failed = FileResult(Path("a.pdf"), Outcome.FAILED, "")
-    assert not is_confirmed(QueueItem("a.pdf", "1", ItemStatus.FAILED, result=failed))
+    assert not is_confirmed(QueueItem("a.pdf", status=ItemStatus.FAILED, result=failed))
 
     cep.unlink()  # CEP deleted from the folder: check again to download it anew
-    assert not is_confirmed(QueueItem("a.pdf", "1", ItemStatus.SUCCESS, result=found))
+    assert not is_confirmed(QueueItem("a.pdf", status=ItemStatus.SUCCESS, result=found))
 
 
 @pytest.fixture
 def app(window, monkeypatch):
     shown = []
-    monkeypatch.setattr(gui.messagebox, "showinfo", lambda title, _msg: shown.append(title))
-    monkeypatch.setattr(gui.messagebox, "showwarning", lambda title, _msg: shown.append(title))
+    monkeypatch.setattr(gui.messages, "info", lambda _parent, title, _msg: shown.append(title))
+    monkeypatch.setattr(gui.messages, "warning", lambda _parent, title, _msg: shown.append(title))
     # Tests start batches without running them, so a previous test may have left one "running".
     window.processing = False
     window.settings = Settings()  # whatever the real user's settings file says
@@ -81,7 +82,7 @@ def test_process_files_skips_confirmed_receipts(app, tmp_path, monkeypatch):
     assert app.items["ok.pdf"].result is not None
     assert all(app.items[p].status is ItemStatus.PENDING for p in batches[0])
     assert app._skipped_confirmed == 1
-    assert app.progress_label_var.get() == "1 / 4"  # the confirmed file counts as done
+    assert app.progress_label.text() == "1 / 4"  # the confirmed file counts as done
     assert "Already confirmed, not checked again: 1" in app._summary(cancelled=False)
 
 
@@ -113,12 +114,12 @@ def failed_banamex(app, path="banamex.pdf"):
 
 
 def test_only_failed_or_not_found_files_can_be_edited():
-    assert gui.can_edit(QueueItem("a", "1", ItemStatus.FAILED))
-    assert gui.can_edit(QueueItem("a", "1", ItemStatus.NOT_FOUND))
-    assert not gui.can_edit(QueueItem("a", "1", ItemStatus.SUCCESS))
-    assert not gui.can_edit(QueueItem("a", "1", ItemStatus.PENDING))
+    assert gui.can_edit(QueueItem("a", status=ItemStatus.FAILED))
+    assert gui.can_edit(QueueItem("a", status=ItemStatus.NOT_FOUND))
+    assert not gui.can_edit(QueueItem("a", status=ItemStatus.SUCCESS))
+    assert not gui.can_edit(QueueItem("a", status=ItemStatus.PENDING))
     edited = PaymentData("a", edited_fields=("amount",))
-    assert gui.can_edit(QueueItem("a", "1", ItemStatus.PENDING, corrected=edited))  # saved, not checked yet
+    assert gui.can_edit(QueueItem("a", status=ItemStatus.PENDING, corrected=edited))  # saved, not checked yet
 
 
 def test_saved_corrections_are_checked_without_rereading(app, monkeypatch):
@@ -169,6 +170,7 @@ def test_result_of_edited_receipt_is_marked(app, tmp_path):
     typed = PaymentData("a.pdf", edited_fields=("beneficiary_account",))
     app._on_file_done("a.pdf", FileResult(Path("a.pdf"), Outcome.NOT_FOUND, "No CEP at Banxico", typed))
     assert app.items["a.pdf"].result_text == "No CEP at Banxico  [edited]"
+    assert app.items["a.pdf"].row.text(2) == "No CEP at Banxico  [edited]"
 
 
 def test_dialog_sends_only_changed_fields_and_shows_problems(app):
@@ -184,20 +186,20 @@ def test_dialog_sends_only_changed_fields_and_shows_problems(app):
     dialog = FieldsDialog(
         app, filename="r.pdf", initial=initial, on_save=on_save, on_open_receipt=lambda: None
     )
-    dialog.vars["beneficiary_account"].set(CLABE)
-    dialog.vars["amount"].set("x")
+    dialog.fields["beneficiary_account"].setText(CLABE)
+    dialog.fields["amount"].setText("x")
 
     dialog.save(check_now=True)
 
     assert calls == [({"beneficiary_account": CLABE, "amount": "x"}, True)]
-    assert dialog.notes["amount"].cget("text") == "'x' isn't a valid amount"
-    assert dialog.winfo_exists()  # stays open to fix it
+    assert dialog.notes["amount"].text() == "'x' isn't a valid amount"
+    assert dialog.isVisible()  # stays open to fix it
 
-    dialog.vars["amount"].set("48750.00")  # back to what was read: no longer a change
+    dialog.fields["amount"].setText("48750.00")  # back to what was read: no longer a change
     dialog.save(check_now=False)
 
     assert calls[-1] == ({"beneficiary_account": CLABE}, False)
-    assert not dialog.winfo_exists()
+    assert not dialog.isVisible()
 
 
 # --- Settings and review -------------------------------------------------------------
@@ -208,44 +210,44 @@ def test_review_results_can_be_edited_and_are_counted(app, tmp_path):
     app._on_file_done("a.pdf", FileResult(Path("a.pdf"), Outcome.REVIEW, "Paid to account …1234"))
     item = app.items["a.pdf"]
     assert item.status is ItemStatus.REVIEW and gui.can_edit(item)
-    assert app.stat_vars["review"].get() == "1"
+    assert app.counts["review"] == 1
     assert "NEEDS REVIEW (1)" in app._summary(cancelled=False)
 
 
 def test_settings_dialog(app):
     from cepxico.gui.settings_dialog import SettingsDialog
-    from cepxico.settings import Settings, load_settings
+    from cepxico.settings import load_settings
 
     saved = []
     dialog = SettingsDialog(
         app, settings=Settings(), on_save=lambda s: saved.append(s) or app.apply_settings(s)
     )
-    dialog.check_accounts.set(True)
-    dialog._update_enabled()
-    dialog.accounts.insert("1.0", "123\n")
+    dialog.check_accounts.setChecked(True)
+    assert dialog.accounts.isEnabled()
+    dialog.accounts.setPlainText("123\n")
     dialog.save()
-    assert saved == [] and "123:" in dialog.problem.cget("text")  # stays open to fix it
+    assert saved == [] and "123:" in dialog.problem.text()  # stays open to fix it
+    assert dialog.isVisible()
 
-    dialog.accounts.delete("1.0", "end")
-    dialog.accounts.insert("1.0", CLABE)
-    dialog.cep_files.set("zip")
+    dialog.accounts.setPlainText(CLABE)
+    dialog.cep_file_buttons[CEPFiles.ZIP].setChecked(True)
     dialog.save()
 
     expected = Settings(cep_files=CEPFiles.ZIP, check_own_accounts=True, own_accounts=(CLABE,))
     assert saved == [expected] and app.settings == expected and load_settings() == expected
-    assert not dialog.winfo_exists()
+    assert not dialog.isVisible()
     app.settings = Settings()
 
 
 def test_settings_dialog_needs_an_account_when_the_check_is_on(app):
     from cepxico.gui.settings_dialog import SettingsDialog
-    from cepxico.settings import Settings
 
     dialog = SettingsDialog(app, settings=Settings(), on_save=lambda s: None)
-    dialog.check_accounts.set(True)
+    assert not dialog.accounts.isEnabled()
+    dialog.check_accounts.setChecked(True)
     settings, problem = dialog.settings_entered()
     assert settings is None and "at least one account" in problem
-    dialog.destroy()
+    dialog.reject()
 
 
 def test_dialog_sends_pago_a_banco_when_ticked(app):
@@ -259,9 +261,8 @@ def test_dialog_sends_pago_a_banco_when_ticked(app):
         on_save=lambda values, check_now: calls.append(values) or {},
         on_open_receipt=lambda: None,
     )
-    dialog.pago_a_banco.set(True)
-    dialog._update_pago_a_banco()
-    assert dialog.labels["beneficiary_account"].cget("text") == "Ordering account"
+    dialog.pago_a_banco.setChecked(True)
+    assert dialog.labels["beneficiary_account"].text() == "Ordering account:"
     dialog.save(check_now=False)
     assert calls == [{"pago_a_banco": "1"}]
 
@@ -271,10 +272,17 @@ def test_zipped_cep_counts_as_confirmed(tmp_path):
     archive.write_bytes(b"PK")
     cep = CEPResult(CEPStatus.FOUND, "", zip_path=archive)
     found = FileResult(Path("a.pdf"), Outcome.SUCCESS, "", cep=cep)
-    assert is_confirmed(QueueItem("a.pdf", "1", ItemStatus.SUCCESS, result=found))
+    assert is_confirmed(QueueItem("a.pdf", status=ItemStatus.SUCCESS, result=found))
 
 
-# --- Language, history, clipboard -------------------------------------------------------
+# --- Language, history, clipboard, drag & drop ---------------------------------------
+
+
+def yes_button_text() -> str:
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    box = QDialogButtonBox(QDialogButtonBox.StandardButton.Yes)  # kept: its button goes with it
+    return box.buttons()[0].text()
 
 
 def test_switching_language_redraws_the_window_and_keeps_the_queue(app):
@@ -286,15 +294,18 @@ def test_switching_language_redraws_the_window_and_keeps_the_queue(app):
     app.switch_language("es")
 
     assert i18n.get_language() == "es" and app.settings.language == "es"
-    assert app.title() == "CEPxico - Verificador de comprobantes SPEI"
+    assert app.windowTitle() == "CEPxico - Verificador de comprobantes SPEI"
     item = app.items["a.pdf"]
-    assert app.tree.item(item.tree_id, "values")[0] == "Revisar"  # status in the new language
-    assert app.tree.item(item.tree_id, "text") == "a.pdf"
-    assert app.stat_vars["review"].get() == "1"
-    assert app.process_button.cget("text") == "Procesar archivos"
+    assert item.row.text(1) == "Revisar"  # status in the new language
+    assert item.row.text(0) == "a.pdf"
+    assert app.tree.topLevelItemCount() == 1
+    assert app.counts["review"] == 1
+    assert app.process_button.text() == "Procesar archivos"
+    assert yes_button_text() == "&Sí"  # Qt's own words too, as in message boxes
 
     app.switch_language("en")
-    assert app.process_button.cget("text") == "Process Files"
+    assert app.process_button.text() == "Process Files"
+    assert yes_button_text() == "&Yes"
     app.settings = Settings()
 
 
@@ -311,33 +322,75 @@ def test_history_window_searches_and_exports(app, tmp_path, monkeypatch):
     dialog = history_dialog.HistoryDialog(app, history=history, on_open=opened.append)
 
     assert [c.file_name for c in dialog.shown] == ["pedro.pdf", "juan.pdf"]  # newest first
-    dialog.search.set("mban")
+    dialog.search.setText("mban")
     assert [c.file_name for c in dialog.shown] == ["juan.pdf"]
+    assert dialog.tree.topLevelItemCount() == 1
 
     out = tmp_path / "export.csv"
-    monkeypatch.setattr(history_dialog.filedialog, "asksaveasfilename", lambda **_: str(out))
-    monkeypatch.setattr(history_dialog.messagebox, "showinfo", lambda *a, **k: None)
+    monkeypatch.setattr(history_dialog.messages, "save_file", lambda *a, **k: str(out))
     dialog.export()
     assert [r["File"] for r in csv.DictReader(out.open(encoding="utf-8-sig"))] == ["juan.pdf"]
-    dialog.destroy()
+    dialog.reject()
 
 
-def test_pasting_copied_files_queues_them(app, monkeypatch):
-    monkeypatch.setattr(gui.ImageGrab, "grabclipboard", lambda: ["C:/r/a.pdf", "C:/r/b.png"])
+def test_history_window_forgets_a_check(app, tmp_path, monkeypatch):
+    from cepxico.gui import history_dialog
+    from cepxico.history import Check, History
+
+    history = History(tmp_path / "h.sqlite3")
+    history.add(Check("2026-11-17T10:00:00-06:00", "juan.pdf", "C:/juan.pdf", "", "success", ""))
+    dialog = history_dialog.HistoryDialog(app, history=history, on_open=lambda _p: None)
+    dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
+    monkeypatch.setattr(history_dialog.messages, "ask", lambda *a, **k: True)
+
+    dialog.forget()
+
+    assert history.checks() == [] and dialog.shown == []
+    dialog.reject()
+
+
+def test_pasting_copied_files_queues_them(app, tmp_path):
+    from PySide6.QtCore import QMimeData, QUrl
+    from PySide6.QtGui import QGuiApplication
+
+    files = [tmp_path / "a.pdf", tmp_path / "b.png"]
+    data = QMimeData()
+    data.setUrls([QUrl.fromLocalFile(str(f)) for f in files])
+    QGuiApplication.clipboard().setMimeData(data)
+
     app.on_paste()
-    assert list(app.items) == ["C:/r/a.pdf", "C:/r/b.png"]
+
+    assert [Path(p) for p in app.items] == files
 
 
-def test_paste_on_linux_without_clipboard_tools_explains_what_to_install(app, monkeypatch):
-    errors = []
+def test_pasting_a_screenshot_queues_it_as_a_png(app):
+    from PySide6.QtGui import QColor, QGuiApplication, QImage
 
-    def no_tools():
-        raise NotImplementedError("wl-paste or xclip is required")
+    picture = QImage(40, 20, QImage.Format.Format_RGB32)
+    picture.fill(QColor("white"))
+    QGuiApplication.clipboard().setImage(picture)
 
-    monkeypatch.setattr(gui.ImageGrab, "grabclipboard", no_tools)
-    monkeypatch.setattr(gui.messagebox, "showerror", lambda title, msg: errors.append(msg))
     app.on_paste()
-    assert errors and "xclip" in errors[0]
+
+    (path,) = app.items
+    assert path.endswith(".png") and Path(path).is_file() and path in app._temp_files
+
+
+def test_dropped_files_are_queued(app, tmp_path):
+    from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
+    from PySide6.QtGui import QDropEvent
+
+    data = QMimeData()
+    data.setUrls([QUrl.fromLocalFile(str(tmp_path / "r.pdf"))])
+    event = QDropEvent(
+        QPointF(10, 10),
+        Qt.DropAction.CopyAction,
+        data,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    app.dropEvent(event)
+    assert [Path(p) for p in app.items] == [tmp_path / "r.pdf"]
 
 
 def test_dialog_sends_spid_when_ticked(app):
@@ -351,25 +404,9 @@ def test_dialog_sends_spid_when_ticked(app):
         on_save=lambda values, check_now: calls.append(values) or {},
         on_open_receipt=lambda: None,
     )
-    dialog.spid.set(False)
+    dialog.spid.setChecked(False)
     dialog.save(check_now=False)
     assert calls == [{"spid": "0"}]
-
-
-def test_history_window_forgets_a_check(app, tmp_path, monkeypatch):
-    from cepxico.gui import history_dialog
-    from cepxico.history import Check, History
-
-    history = History(tmp_path / "h.sqlite3")
-    history.add(Check("2026-11-17T10:00:00-06:00", "juan.pdf", "C:/juan.pdf", "", "success", ""))
-    dialog = history_dialog.HistoryDialog(app, history=history, on_open=lambda _p: None)
-    dialog.tree.selection_set("0")
-    monkeypatch.setattr(history_dialog.messagebox, "askyesno", lambda *a, **k: True)
-
-    dialog.forget()
-
-    assert history.checks() == [] and dialog.shown == []
-    dialog.destroy()
 
 
 def test_settings_show_the_data_folder(app, monkeypatch):
@@ -381,4 +418,62 @@ def test_settings_show_the_data_folder(app, monkeypatch):
     dialog = settings_dialog.SettingsDialog(app, settings=Settings(), on_save=lambda s: None)
     dialog.open_data_folder()
     assert opened == [app_data_dir()]
-    dialog.destroy()
+    dialog.reject()
+
+
+# --- Look and feel ----------------------------------------------------------------------
+
+
+def test_commands_are_offered_only_when_they_apply(app):
+    assert not any(a.isEnabled() for a in (app.edit_action, app.remove_action, app.clear_action))
+    failed_banamex(app)
+    app.items["banamex.pdf"].row.setSelected(True)
+    assert all(a.isEnabled() for a in (app.edit_action, app.remove_action, app.clear_action))
+
+
+def test_empty_queue_says_how_to_add_files(app):
+    assert app.tree.topLevelItemCount() == 0 and "Drag and drop files" in app.tree.placeholder
+
+
+def details(app) -> dict[str, str]:
+    """The details pane's rows, {name: value}, groups included."""
+    from PySide6.QtWidgets import QTreeWidgetItemIterator
+
+    rows = {}
+    it = QTreeWidgetItemIterator(app.details)
+    while it.value():
+        rows[it.value().text(0)] = it.value().text(1)
+        it += 1
+    return rows
+
+
+def test_details_show_the_receipt_and_copy_values(app):
+    from PySide6.QtGui import QGuiApplication
+
+    failed_banamex(app)
+    app.items["banamex.pdf"].row.setSelected(True)
+    rows = details(app)
+    assert rows["Status"] == "Failed" and rows["Result"] == "Missing cuenta beneficiaria"
+    assert rows["Clave de rastreo"] == "085901234567890123" and rows["Amount"] == "$48,750.00"
+    assert rows["Account"] == "N/A" and "Receipt" in rows and "Banks" in rows
+
+    clave = app.details.findItems("Clave de rastreo", Qt.MatchFlag.MatchRecursive)[0]
+    app.details.setCurrentItem(clave)
+    app.details.copy_value()
+    assert QGuiApplication.clipboard().text() == "085901234567890123"
+
+    app.tree.clearSelection()
+    assert app.details.topLevelItemCount() == 0  # shows "Select a file to view details."
+
+
+@pytest.mark.parametrize(
+    ("amount", "spid", "shown"),
+    [
+        ("12500.5", False, "$12,500.50"),
+        ("980", True, "US$980.00"),
+        ("abc", False, "abc"),
+        (None, False, None),
+    ],
+)
+def test_amounts_are_shown_as_money(amount, spid, shown):
+    assert gui.money(amount, spid) == shown

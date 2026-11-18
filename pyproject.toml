@@ -15,7 +15,7 @@ dependencies = [
     "pillow>=10.0",
     "rapidocr>=3.10,<4",  # OCR for scans and screenshots; ONNX Runtime, models bundled
     "requests>=2.31",
-    "tkinterdnd2>=0.3",
+    "PySide6-Essentials>=6.8",  # the desktop app (Qt Widgets); LGPL
 ]
 
 [project.optional-dependencies]

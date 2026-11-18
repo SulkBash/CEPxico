@@ -1,156 +1,211 @@
-"""Colors, fonts and ttk styles for the desktop app, on Windows, macOS and Linux."""
+"""What the desktop app shares across windows: the application object, status colors,
+icons, and placing dialogs.
+
+The app uses each system's own style, fonts and colors (light or dark, as the system
+is set), like any other program there. Only the status colors and the icons are its own.
+"""
 
 from __future__ import annotations
 
+import contextlib
+import math
 import sys
-import tkinter as tk
-from tkinter import ttk
+from collections.abc import Callable
 
-APP_BG = "#F4F6FA"
-CARD_BG = "#FFFFFF"
-TEXT = "#121826"
-TEXT_MUTED = "#6B7280"
-ACCENT = "#1E5EFF"
+from PIL import Image
+from PySide6.QtCore import QLibraryInfo, QSize, Qt, QTranslator
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication, QIcon, QImage, QPalette, QPixmap
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QWidget
 
-# Each system's own UI and monospace fonts. Windows has a semibold face; elsewhere bold
-# is a weight of the regular family.
-if sys.platform == "win32":
-    FONT, FONT_BOLD, FONT_MONO = "Segoe UI", "Segoe UI Semibold", "Consolas"
-elif sys.platform == "darwin":
-    FONT, FONT_BOLD, FONT_MONO = "Helvetica Neue", "", "Menlo"
-else:
-    FONT, FONT_BOLD, FONT_MONO = "DejaVu Sans", "", "DejaVu Sans Mono"
+from cepxico.gui import icons
 
-# macOS's native toolkit draws tk.Button its own way, ignoring colors; ttk buttons in
-# the "clam" theme look the same everywhere.
-TTK_BUTTONS = sys.platform == "darwin"
-
-
-def font(size: int, bold: bool = False) -> tuple[str, int] | tuple[str, int, str]:
-    if not bold:
-        return (FONT, size)
-    return (FONT_BOLD, size) if FONT_BOLD else (FONT, size, "bold")
-
-
-def mono(size: int) -> tuple[str, int]:
-    return (FONT_MONO, size)
-
-
-# Treeview row colors per status tag.
+# The color of each status, for its glyph and its name in the details. Readable on
+# light and dark backgrounds alike.
 STATUS_COLORS = {
-    "status_pending": "#5f6368",
-    "status_processing": "#e67e22",
-    "status_success": "#1e8e3e",
-    "status_notfound": "#B45309",
-    "status_review": "#1D4ED8",
-    "status_failed": "#c5221f",
-    "status_cancelled": "#8e44ad",
+    "status_pending": "#8A93A3",
+    "status_processing": "#D08A12",
+    "status_success": "#23A05A",
+    "status_notfound": "#D9600F",
+    "status_review": "#3B7DED",
+    "status_failed": "#DC3B36",
+    "status_cancelled": "#8E7CC3",
 }
+ERROR_COLOR = STATUS_COLORS["status_failed"]
 
-# tk.Button colors per variant (tk.Button renders reliably across themes, unlike ttk).
-BUTTON_VARIANTS = {
-    "neutral": {
-        "bg": "#E8EEF8",
-        "fg": "#1F2937",
-        "activebackground": "#D9E4F5",
-        "activeforeground": "#111827",
-    },
-    "danger": {
-        "bg": "#FCE8EA",
-        "fg": "#A61B1B",
-        "activebackground": "#F7D5D9",
-        "activeforeground": "#8D1414",
-    },
-    "primary": {"bg": ACCENT, "fg": "#FFFFFF", "activebackground": "#1A50DA", "activeforeground": "#FFFFFF"},
+# The detail color of each toolbar icon (its lines take the text color).
+ICON_ACCENTS = {
+    "add": "#23A05A",
+    "remove": "#DC3B36",
+    "edit": "#E8A93A",
+    "trash": "#DC3B36",
+    "history": "#3B7DED",
+    "open": "#3B7DED",
+    "receipt": "#8A9BB5",
+    "stop": "#DC3B36",
+    "play": "#23A05A",
 }
-BUTTON_COMMON = {
-    "font": font(10, bold=True),
-    "padx": 14,
-    "pady": 8,
-    "bd": 1,
-    "relief": tk.RAISED,
-    "cursor": "hand2",
-    "disabledforeground": "#8A94A8",
-}
+LOGO_INK = "#1F3A5F"
+
+_app: QApplication | None = None
 
 
-def apply(root: tk.Misc) -> None:
-    style = ttk.Style(root)
-    style.theme_use("clam")
-
-    style.configure("App.TFrame", background=APP_BG)
-    style.configure("Card.TFrame", background=CARD_BG)
-    style.configure("HeaderTitle.TLabel", background=APP_BG, foreground=TEXT, font=font(20, bold=True))
-    style.configure("HeaderSubtitle.TLabel", background=APP_BG, foreground="#5B6475", font=font(10))
-    style.configure("CardTitle.TLabel", background=CARD_BG, foreground=TEXT, font=font(11, bold=True))
-    style.configure("CardValue.TLabel", background=CARD_BG, foreground=TEXT, font=font(18, bold=True))
-    style.configure("CardHint.TLabel", background=CARD_BG, foreground=TEXT_MUTED, font=font(9))
-    style.configure("Card.TCheckbutton", background=CARD_BG, foreground=TEXT, font=font(9))
-    style.map("Card.TCheckbutton", background=[("active", CARD_BG)])
-    style.configure("Card.TRadiobutton", background=CARD_BG, foreground=TEXT, font=font(9))
-    style.map("Card.TRadiobutton", background=[("active", CARD_BG)])
-
-    style.configure(
-        "Modern.Treeview",
-        background=CARD_BG,
-        fieldbackground=CARD_BG,
-        foreground="#111827",
-        rowheight=30,
-        font=font(10),
-        borderwidth=0,
-    )
-    style.configure(
-        "Modern.Treeview.Heading",
-        background="#EEF2F8",
-        foreground="#1F2937",
-        font=font(10, bold=True),
-        relief="flat",
-    )
-    style.map("Modern.Treeview", background=[("selected", "#DCE8FF")], foreground=[("selected", "#111827")])
-
-    style.configure(
-        "Modern.Horizontal.TProgressbar",
-        troughcolor="#E7ECF6",
-        background=ACCENT,
-        bordercolor="#E7ECF6",
-        lightcolor=ACCENT,
-        darkcolor=ACCENT,
-    )
-    style.configure(
-        "StatusBar.TLabel", background="#E9EEF8", foreground="#202939", font=font(9), padding=(8, 6)
-    )
-    for variant, colors in BUTTON_VARIANTS.items():
-        name = f"{variant.capitalize()}.TButton"
-        style.configure(
-            name,
-            background=colors["bg"],
-            foreground=colors["fg"],
-            font=BUTTON_COMMON["font"],
-            padding=(BUTTON_COMMON["padx"], BUTTON_COMMON["pady"] - 2),
-        )
-        style.map(
-            name,
-            background=[("disabled", colors["bg"]), ("active", colors["activebackground"])],
-            foreground=[
-                ("disabled", BUTTON_COMMON["disabledforeground"]),
-                ("active", colors["activeforeground"]),
-            ],
-        )
+def application() -> QApplication:
+    """The QApplication, created on first use."""
+    global _app
+    existing = QApplication.instance()
+    if isinstance(existing, QApplication):
+        _app = existing
+        return existing
+    _set_windows_app_id()
+    _app = QApplication(sys.argv[:1])
+    _app.setApplicationName("CEPxico")
+    _app.setWindowIcon(app_icon())
+    return _app
 
 
-def make_button(
-    parent: tk.Misc, text: str, command, variant: str = "neutral", **kwargs
-) -> tk.Button | ttk.Button:
-    """A button in the app's colors. Both kinds take `state` in configure()."""
-    if TTK_BUTTONS:
-        return ttk.Button(
-            parent,
-            text=text,
-            command=command,
-            style=f"{variant.capitalize()}.TButton",
-            cursor="hand2",
-            **kwargs,
-        )
-    return tk.Button(
-        parent, text=text, command=command, **BUTTON_VARIANTS[variant], **BUTTON_COMMON, **kwargs
-    )
+def _set_windows_app_id() -> None:
+    """Windows: group the app's windows under its own taskbar icon, not Python's."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    with contextlib.suppress(AttributeError, OSError):
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("mx.cepxico.app")  # type: ignore[attr-defined]
+
+
+_translator: QTranslator | None = None
+
+
+def translate_qt(language: str) -> None:
+    """Qt's own words (Yes, No, Cancel in message boxes; the text box menu) in the
+    app's language. English needs nothing."""
+    global _translator
+    app = application()
+    if _translator is not None:
+        app.removeTranslator(_translator)
+        _translator = None
+    if language == "en":
+        return
+    translator = QTranslator(app)
+    if translator.load(f"qtbase_{language}", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+        app.installTranslator(translator)
+        _translator = translator
+
+
+def mono(size_change: float = 0) -> QFont:
+    """The system's fixed-width font, for claves and account numbers."""
+    font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+    families = set(QFontDatabase.families())
+    for family in ("Cascadia Mono", "Consolas"):  # nicer than Courier New, on Windows
+        if family in families:
+            font.setFamily(family)
+            break
+    font.setPointSizeF(QApplication.font().pointSizeF() + size_change)
+    return font
+
+
+def text_color() -> str:
+    return QApplication.palette().color(QPalette.ColorRole.WindowText).name()
+
+
+def muted_color() -> QColor:
+    return QApplication.palette().color(QPalette.ColorRole.PlaceholderText)
+
+
+# --- icons -----------------------------------------------------------------------------
+
+_cache: dict[tuple, QIcon | QPixmap | QImage] = {}
+
+
+def clear_icons() -> None:
+    """Forget drawn icons, after the system switches between light and dark."""
+    _cache.clear()
+
+
+def qimage(image: Image.Image) -> QImage:
+    image = image.convert("RGBA")
+    data = image.tobytes("raw", "RGBA")
+    return QImage(data, image.width, image.height, QImage.Format.Format_RGBA8888).copy()
+
+
+def _screen_ratio() -> float:
+    return max([s.devicePixelRatio() for s in QGuiApplication.screens()] or [1.0])
+
+
+def _icon(key: tuple, size: int, draw: Callable[[int], Image.Image]) -> QIcon:
+    """A QIcon drawn at every scale a screen might ask for, so it's never blurry."""
+    if key not in _cache:
+        result = QIcon()
+        for scale in sorted({1.0, 1.25, 1.5, 2.0, 3.0, _screen_ratio()}):
+            result.addPixmap(QPixmap.fromImage(qimage(draw(math.ceil(size * scale)))))
+        _cache[key] = result
+    return _cache[key]  # type: ignore[return-value]
+
+
+def icon(name: str, size: int = 16) -> QIcon:
+    """A toolbar icon: lines in the text color, its detail in its own color."""
+    ink = text_color()
+    accent = ICON_ACCENTS.get(name, ink)
+    return _icon(("icon", name, ink, size), size, lambda s: icons.draw(name, s, ink, accent))
+
+
+def status_icon(tag: str, frame: int = 0) -> QIcon:
+    """The glyph of a status tag ("status_success"...); `frame` turns the processing spinner."""
+    kind = tag.removeprefix("status_")
+    frame = frame if kind == "processing" else 0
+    return _icon(("status", kind, frame), 16, lambda s: icons.status(kind, s, STATUS_COLORS[tag], frame))
+
+
+def app_icon() -> QIcon:
+    """CEPxico's mark at the sizes title bars, taskbars and docks pick from."""
+    key = ("appicon",)
+    if key not in _cache:
+        result = QIcon()
+        for s in (16, 20, 24, 32, 40, 48, 64, 128, 256):
+            result.addPixmap(
+                QPixmap.fromImage(qimage(icons.logo(s, LOGO_INK, STATUS_COLORS["status_success"])))
+            )
+        _cache[key] = result
+    return _cache[key]  # type: ignore[return-value]
+
+
+# --- dialogs -----------------------------------------------------------------------------
+
+
+def wrapped(text: str, width: int = 460) -> QLabel:
+    """A paragraph of explanation, wrapped at `width` pixels. Its height is fixed from
+    the start: dialogs size themselves before Qt knows how tall wrapped text is."""
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setFixedWidth(width)
+    label.setMinimumHeight(label.heightForWidth(width))
+    return label
+
+
+def error_label() -> QLabel:
+    """Where a dialog says what's wrong with what was typed; empty until then."""
+    label = QLabel()
+    label.setWordWrap(True)
+    label.setStyleSheet(f"color: {ERROR_COLOR}")
+    return label
+
+
+def present(dialog: QDialog, parent: QWidget | None, size: QSize | None = None) -> None:
+    """Opens a dialog over its parent, modal, kept on screen. It's deleted once closed;
+    the code after show() keeps running (no nested event loop)."""
+    dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+    dialog.finished.connect(dialog.deleteLater)
+    if size is not None:
+        dialog.resize(size)
+    else:
+        dialog.adjustSize()
+    screen = (parent.screen() if parent else None) or QGuiApplication.primaryScreen()
+    area = screen.availableGeometry()
+    frame = 32  # title bar, outside the size Qt reports before the window is shown
+    width, height = min(dialog.width(), area.width()), min(dialog.height(), area.height() - frame)
+    dialog.resize(width, height)
+    center = parent.window().frameGeometry().center() if parent else area.center()
+    x = max(area.left(), min(center.x() - width // 2, area.right() - width))
+    y = max(area.top(), min(center.y() - height // 2 - frame, area.bottom() - height - frame))
+    dialog.move(x, y)
+    dialog.show()

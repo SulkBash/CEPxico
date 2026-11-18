@@ -8,9 +8,14 @@ from cepxico.config import DEFAULT_CEP_DIR
 
 
 def run(cep_dir: Path = DEFAULT_CEP_DIR) -> None:
-    from cepxico.gui.app import CEPApp  # imported lazily: Tk isn't needed for the CLI
+    # Imported lazily: Qt isn't needed for the command line.
+    from cepxico.gui import theme
+    from cepxico.gui.app import CEPApp
 
-    CEPApp(cep_dir=cep_dir).mainloop()
+    app = theme.application()
+    window = CEPApp(cep_dir=cep_dir)
+    window.show()
+    app.exec()
 
 
 def main() -> None:

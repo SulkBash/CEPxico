@@ -305,11 +305,6 @@ def png(size=(60, 20)) -> bytes:
     return out.getvalue()
 
 
-@pytest.fixture
-def tk_root(window):
-    return window  # the shared app window (see conftest)
-
-
 def request(**overrides) -> CodeRequest:
     values = {
         "image": png(),
@@ -322,41 +317,41 @@ def request(**overrides) -> CodeRequest:
     return CodeRequest(**(values | overrides))
 
 
-def test_code_dialog_returns_the_code_typed(tk_root):
+def test_code_dialog_returns_the_code_typed(window):
     from cepxico.gui.code_dialog import CodeDialog
 
     answers = []
-    dialog = CodeDialog(tk_root, request=request(), on_answer=answers.append)
-    assert dialog._photo is not None and dialog._photo.width() == 120  # shown at twice the size
+    dialog = CodeDialog(window, request=request(), on_answer=answers.append)
+    assert dialog.picture is not None and dialog.picture.width() == 120  # shown at twice the size
     dialog.submit()  # nothing typed yet: stays open
-    assert answers == [] and dialog.winfo_exists()
+    assert answers == [] and dialog.isVisible()
 
-    dialog.code.set(" ab12 ")
+    dialog.code.setText(" ab12 ")
     dialog.submit()
-    assert answers == ["ab12"] and not dialog.winfo_exists()
+    assert answers == ["ab12"] and not dialog.isVisible()
 
 
-def test_code_dialog_skip_and_another_image(tk_root):
+def test_code_dialog_skip_and_another_image(window):
     from cepxico.gui.code_dialog import CodeDialog
 
     answers = []
-    dialog = CodeDialog(tk_root, request=request(attempt=2), on_answer=answers.append)
+    dialog = CodeDialog(window, request=request(attempt=2), on_answer=answers.append)
     dialog.another_image()
-    assert dialog._photo.width() == 160
-    dialog.skip()
-    assert answers == [None]
+    assert dialog.picture.width() == 160
+    dialog.reject()  # Escape, or the window's close button
+    assert answers == [None] and not dialog.isVisible()
 
 
-def test_code_dialog_reports_an_image_it_cant_get(tk_root):
+def test_code_dialog_reports_an_image_it_cant_get(window):
     from cepxico.gui.code_dialog import CodeDialog
 
     def fail():
         raise BanxicoError("Banxico is down")
 
-    dialog = CodeDialog(tk_root, request=request(image=b"junk", new_image=fail), on_answer=lambda _c: None)
-    assert "another one" in dialog.image_label.cget("text")
+    dialog = CodeDialog(window, request=request(image=b"junk", new_image=fail), on_answer=lambda _c: None)
+    assert "another one" in dialog.image_label.text()
     dialog.another_image()
-    assert dialog.image_label.cget("text") == "Banxico is down"
+    assert dialog.image_label.text() == "Banxico is down"
     dialog.skip()
 
 

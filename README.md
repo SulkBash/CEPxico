@@ -36,10 +36,11 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-On Linux, Tk comes from the system: `sudo apt install python3-tk` (Debian/Ubuntu) or
-`sudo dnf install python3-tkinter` (Fedora). Pasting screenshots also needs
-`wl-clipboard` (Wayland) or `xclip` (X11). Python from python.org or Homebrew on macOS
-includes Tk.
+The desktop app is built with Qt (PySide6), which pip installs. On Linux it also needs
+`libxcb-cursor0`, which some distributions leave out: `sudo apt install libxcb-cursor0`.
+On Windows, a venv made from Anaconda's Python can't load PySide6 6.10 or newer ("DLL
+load failed": Anaconda's older Visual C++ runtime loads first); there,
+`pip install "PySide6-Essentials<6.10"`.
 
 OCR for screenshots and scanned PDFs is included (RapidOCR, about 50 MB). No Python
 needed for end users: see [Build the app](#build-the-app).
@@ -71,9 +72,15 @@ as Banxico asks.
 
 Files copied in the file manager can be pasted too, like dropped files.
 
+Every action is also in the menu bar, and right-clicking a receipt opens it or its CEP.
+Shortcuts: Ctrl+O add files, F5 process, Esc cancel, F2 edit fields, Del remove,
+Ctrl+A select all, Ctrl+H history, Ctrl+, settings (Cmd instead of Ctrl on a Mac).
+In the details pane, Ctrl+C (or right-click) copies the selected value, such as the
+clave de rastreo. The app follows the system's light or dark theme.
+
 ### Settings
 
-The **Settings** button, saved in `settings.json` in the app's data folder and also
+**Settings**, saved in `settings.json` in the app's data folder and also
 used by the command line:
 
 | System | Data folder (settings, history, log) |
@@ -96,8 +103,8 @@ the folder, with a button to open it.
   to any other account are marked Review without asking Banxico. List the debit card
   or phone number too if customers pay to those.
 - **Language:** Español, English, or the system's language (the default; Spanish when
-  the system's language is neither). The button at the top right of the window switches
-  directly. Results already shown keep the language they were checked in.
+  the system's language is neither). Tools → Language switches directly. Results
+  already shown keep the language they were checked in.
 
 ### What every check includes
 
@@ -197,7 +204,8 @@ receipt ─► extraction ─► PaymentData ─► identify ─► sender/recei
 | `pipeline.py` | One receipt end to end, and batches of them concurrently; shared by CLI and GUI |
 | `i18n.py`, `translations.py` | Spanish and English for everything users read |
 | `config.py` | Data folder and opening files, per system |
-| `cli.py`, `gui/` | User interfaces |
+| `cli.py` | Command line |
+| `gui/` | Desktop app (Qt, in the system's own style): main window, dialogs, `icons.py` (icons drawn at run time) |
 
 ### Banks
 
@@ -269,7 +277,7 @@ pyinstaller packaging/cepxico.spec --noconfirm
 ```
 
 Build on each system for that system; PyInstaller doesn't cross-compile. This makes
-`dist/cepxico/` (about 320 MB, mostly OpenCV and ONNX Runtime) with `cepxico-gui`
+`dist/cepxico/` (about 340 MB, mostly OpenCV, ONNX Runtime and Qt) with `cepxico-gui`
 (desktop app) and `cepxico` (command line), `.exe` on Windows. On macOS it also makes
 `dist/CEPxico.app`. Zip the folder (or the `.app`) to share it; it runs without Python
 installed, on the same kind of system it was built on (64-bit Windows, macOS on the
@@ -287,8 +295,9 @@ ruff check . ; ruff format .
 ```
 
 Tests run offline. `tests/data/` holds snapshots of Banxico's public bank catalog
-for 2019, 2024 and 2026, to test name changes over time. GitHub Actions runs them on
-Windows, macOS and Linux (`.github/workflows/tests.yml`).
+for 2019, 2024 and 2026, to test name changes over time. The desktop app's tests use
+Qt's offscreen platform, so no window opens and no display is needed. GitHub Actions
+runs them on Windows, macOS and Linux (`.github/workflows/tests.yml`).
 Never commit real receipts or CEPs: they contain account numbers. `.gitignore`
 excludes PDFs and images for this reason. Values copied into tests (claves, accounts,
 amounts) must be made up too.
@@ -316,8 +325,6 @@ translation, a translation whose `{placeholders}` differ, or a leftover translat
   [receipts used twice](#receipts-used-twice)). Moving a folder of already-checked
   receipts and checking them again therefore marks them Review; **Forget** in History
   clears the old checks.
-- Text looks slightly soft on Windows with display scaling above 100%: the app doesn't
-  declare itself DPI-aware, so Windows stretches it.
 
 ## License
 

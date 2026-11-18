@@ -141,10 +141,23 @@ ES: dict[str, str] = {
     "Documents & Images": "Documentos e imágenes",
     "All Files": "Todos los archivos",
     "CEPxico - SPEI receipt checker": "CEPxico - Verificador de comprobantes SPEI",
-    "SPEI receipt checker": "Verificador de comprobantes SPEI",
-    "Drop SPEI receipts, monitor every file in real time, and download CEPs with clear diagnostics.": (
-        "Arrastra comprobantes SPEI, sigue cada archivo en tiempo real y descarga los CEP con "
-        "diagnósticos claros."
+    "Receipt": "Comprobante",
+    "Copy": "Copiar",
+    "Search": "Buscar",
+    "Code": "Código",
+    "Banks": "Bancos",
+    "Banxico's record": "Registro de Banxico",
+    # Menu bar
+    "Receipts": "Comprobantes",
+    "Tools": "Herramientas",
+    "Help": "Ayuda",
+    "Paste Image": "Pegar imagen",
+    "Select All": "Seleccionar todo",
+    "Exit": "Salir",
+    "About CEPxico": "Acerca de CEPxico",
+    "Checks SPEI receipts against Banxico's CEP service and saves the CEP of every transfer it confirms.": (
+        "Verifica comprobantes SPEI con el servicio CEP de Banxico y guarda el CEP de cada "
+        "transferencia que confirma."
     ),
     "Process Files": "Procesar archivos",
     "Cancel": "Cancelar",
@@ -160,8 +173,6 @@ ES: dict[str, str] = {
     "Total files loaded: {count}": "Archivos cargados: {count}",
     "Processed: {count}": "Procesados: {count}",
     "Ready": "Listo",
-    "Loaded": "Cargados",
-    "Processed": "Procesados",
     "CEP Found": "CEP encontrado",
     "Needs Review": "Por revisar",
     "Not Found at Banxico": "No encontrado en Banxico",
@@ -183,9 +194,6 @@ ES: dict[str, str] = {
     "Edited, ready to check": "Editado, listo para verificar",
     "N/A": "N/D",
     "Pago a banco: paid to the receiving bank itself": "Pago a banco: pagado al propio banco receptor",
-    "Double-click the file (or Edit Fields) to correct or fill in fields.": (
-        "Haz doble clic en el archivo (o Editar campos) para corregir o completar campos."
-    ),
     "No Files": "Sin archivos",
     "No files to process.": "No hay archivos que procesar.",
     "Nothing to Check": "Nada que verificar",
@@ -217,12 +225,6 @@ ES: dict[str, str] = {
     "History": "Historial",
     "Invalid File": "Archivo no válido",
     "Only PDF or image files are accepted: {path}": "Solo se aceptan archivos PDF o de imagen: {path}",
-    "Paste Error": "Error al pegar",
-    "Pasting images needs wl-clipboard (Wayland) or xclip (X11). Install one and try again.": (
-        "Para pegar imágenes se necesita wl-clipboard (Wayland) o xclip (X11). "
-        "Instala uno e intenta de nuevo."
-    ),
-    "Failed to read clipboard: {error}": "No se pudo leer el portapapeles: {error}",
     "Couldn't open {path}: {error}": "No se pudo abrir {path}: {error}",
     "Path": "Ruta",
     "Date": "Fecha",
@@ -232,17 +234,9 @@ ES: dict[str, str] = {
     "Receiving bank": "Banco receptor",
     "edited": "editado",
     "Skipped by user": "Omitido por el usuario",
-    "Receipt Queue": "Cola de comprobantes",
     "Drag and drop files, paste a screenshot ({shortcut}), or use Add Files.": (
         "Arrastra y suelta archivos, pega una captura de pantalla ({shortcut}) o usa Agregar archivos."
     ),
-    "File Details": "Detalles del archivo",
-    "Select any row to inspect extracted fields and status.": (
-        "Selecciona una fila para ver los campos extraídos y su estado."
-    ),
-    "Batch Progress": "Avance del lote",
-    "Tracks processed files in the active queue.": "Archivos procesados de la cola actual.",
-    "Pending Files": "Archivos pendientes",
     "Open Receipt": "Abrir comprobante",
     "Status at Banxico": "Estado en Banxico",
     "Sender": "Ordenante",
@@ -274,19 +268,16 @@ ES: dict[str, str] = {
     "{shown} of {total}": "{shown} de {total}",
     "Open CEP": "Abrir CEP",
     "Select a row first.": "Primero selecciona una fila.",
-    "Close": "Cerrar",
     "Couldn't read the history: {error}": "No se pudo leer el historial: {error}",
     "No CEP file for this check on this computer.": (
         "No hay archivo de CEP de esta verificación en esta computadora."
     ),
     "Couldn't write the file: {error}": "No se pudo escribir el archivo: {error}",
-    "Every receipt checked on this computer": "Todos los comprobantes verificados en esta computadora",
     "Kept to catch receipts used twice and for your records. Search by file, clave de rastreo, amount, "
     "name or bank.": (
         "Se guarda para detectar comprobantes usados dos veces y para tus registros. Busca por archivo, "
         "clave de rastreo, monto, nombre o banco."
     ),
-    "Search": "Buscar",
     "Payment date": "Fecha de pago",
     "CEP file": "Archivo del CEP",
     "File path": "Ruta del archivo",
